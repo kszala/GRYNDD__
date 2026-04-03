@@ -4,7 +4,10 @@ import {
   X, Edit2, Trash2, Check, Search, Filter, Undo2, ChevronDown 
 } from 'lucide-react';
 
+import { fetchTasks, addTask as addServiceTask, deleteTask as deleteServiceTask, updateTask as updateServiceTask, GryndFlowTask as Task } from '../services/gryndflowService';
+
 // --- Types ---
+/* Use GryndFlowTask as Task *//*
 interface Task {
   id: string;
   text: string;
@@ -18,6 +21,7 @@ interface Task {
   createdAt: number;
   googleEventId?: string;
 }
+*/
 
 const CATEGORIES: Record<string, { name: string; color: string; border: string }> = {
   work: { name: 'Work', color: 'bg-indigo-500', border: 'border-indigo-400' },
@@ -29,8 +33,18 @@ const CATEGORIES: Record<string, { name: string; color: string; border: string }
 const GryndFlowV2 = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [inputValue, setInputValue] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
   const timelineRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const loadTasks = async () => {
+      const dbTasks = await fetchTasks();
+      setTasks(dbTasks);
+    };
+    loadTasks();
+  }, []);
 
   // --- 1. Google Calendar Integration Logic ---
   const syncToGoogleCalendar = async (task: Task) => {
@@ -95,21 +109,20 @@ const GryndFlowV2 = () => {
   }, [currentTime]);
 
   // --- 3. Magic NLP Parser (Preserving your features) ---
-  const handleAddTask = (e: React.FormEvent) => {
+  const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue) return;
 
     // Regex for "Physics from 10am to 2pm"
     const rangeMatch = inputValue.match(/(.*) from (\d+)\s*(am|pm) to (\d+)\s*(am|pm)/i);
     
-    let newTask: Task;
+    let newTaskData: Omit<Task, 'id' | 'user_id'>;
     if (rangeMatch) {
       const [_, text, start, sAmPm, end, eAmPm] = rangeMatch;
       const startH = sAmPm.toLowerCase() === 'pm' ? parseInt(start) + 12 : parseInt(start);
       const endH = eAmPm.toLowerCase() === 'pm' ? parseInt(end) + 12 : parseInt(end);
       
-      newTask = {
-        id: Math.random().toString(36),
+      newTaskData = {
         text: text.trim(),
         priority: 'normal',
         completed: false,
@@ -121,8 +134,7 @@ const GryndFlowV2 = () => {
         createdAt: Date.now()
       };
     } else {
-      newTask = {
-        id: Math.random().toString(36),
+      newTaskData = {
         text: inputValue,
         priority: 'normal',
         completed: false,
@@ -135,9 +147,76 @@ const GryndFlowV2 = () => {
       };
     }
 
-    setTasks([...tasks, newTask]);
-    syncToGoogleCalendar(newTask);
+    const savedTask = await addServiceTask(newTaskData);
+    if (savedTask) {
+      setTasks([...tasks, savedTask]);
+      syncToGoogleCalendar(savedTask);
+    }
     setInputValue('');
+  };
+
+  const handleDeleteTask = async (id: string) => {
+    const success = await deleteServiceTask(id);
+    if (success) {
+      setTasks(tasks.filter(t => t.id !== id));
+    }
+  };
+
+  const handleToggleComplete = async (task: Task) => {
+    const updatedStatus = !task.completed;
+    setTasks(tasks.map(t => t.id === task.id ? { ...t, completed: updatedStatus } : t));
+    const success = await updateServiceTask(task.id, { completed: updatedStatus });
+    if (!success) {
+      setTasks(tasks.map(t => t.id === task.id ? { ...t, completed: !updatedStatus } : t));
+    }
+  };
+
+  const startEditing = (task: Task) => {
+    setEditingId(task.id);
+    if (task.isTimeBlock && task.time && task.endTime) {
+      const formatAmpm = (t: string) => {
+        const h = parseInt(t.split(':')[0]);
+        return `${h % 12 || 12}${h >= 12 ? 'pm' : 'am'}`;
+      };
+      setEditValue(`${task.text} from ${formatAmpm(task.time)} to ${formatAmpm(task.endTime)}`);
+    } else {
+      setEditValue(task.text);
+    }
+  };
+
+  const handleUpdateTask = async (task: Task) => {
+    if (!editValue.trim() || editValue === task.text) {
+      setEditingId(null);
+      return;
+    }
+
+    const rangeMatch = editValue.match(/(.*) from (\d+)\s*(am|pm) to (\d+)\s*(am|pm)/i);
+    let updates: Partial<Task>;
+
+    if (rangeMatch) {
+      const [_, text, start, sAmPm, end, eAmPm] = rangeMatch;
+      const startH = sAmPm.toLowerCase() === 'pm' ? parseInt(start) + 12 : parseInt(start);
+      const endH = eAmPm.toLowerCase() === 'pm' ? parseInt(end) + 12 : parseInt(end);
+      
+      updates = {
+        text: text.trim(),
+        time: `${startH.toString().padStart(2, '0')}:00`,
+        endTime: `${endH.toString().padStart(2, '0')}:00`,
+        duration: (endH - startH) * 60,
+        isTimeBlock: true,
+      };
+    } else {
+      updates = { text: editValue.trim() };
+    }
+
+    setTasks(tasks.map(t => t.id === task.id ? { ...t, ...updates } : t));
+    setEditingId(null);
+
+    const success = await updateServiceTask(task.id, updates);
+    if (!success) {
+      const dbTasks = await fetchTasks();
+      setTasks(dbTasks);
+    }
   };
 
   // --- Fix 7: Consistency Score ---
@@ -345,19 +424,38 @@ const GryndFlowV2 = () => {
                     {unscheduledTasks.map(task => (
                       <div 
                         key={task.id}
-                        className={`${CATEGORIES[task.category]?.border || 'border-slate-700'} border-l-4 p-4 rounded-r-md shadow-2xl shadow-black/40 transition-transform hover:translate-x-1`}
+                        className={`${CATEGORIES[task.category]?.border || 'border-slate-700'} border-l-4 p-4 rounded-r-md shadow-2xl shadow-black/40 transition-all hover:translate-x-1 ${task.completed ? 'opacity-50' : ''}`}
                         style={{ backgroundColor: 'var(--color-surface-raised)', borderLeftColor: 'var(--color-border)' }}
                       >
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <h3 className="text-sm font-bold" style={{ color: 'var(--color-text-primary)' }}>{task.text}</h3>
-                            <p className="text-[10px] font-medium mt-1 uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>{task.category}</p>
+                        <div className="flex justify-between items-start gap-4">
+                          <button onClick={() => handleToggleComplete(task)} className="mt-0.5 shrink-0 transition-transform hover:scale-110">
+                            <div className={`w-5 h-5 rounded-md border-2 ${task.completed ? 'bg-indigo-500 border-indigo-500' : 'border-slate-500 hover:border-indigo-400'} flex items-center justify-center transition-colors shadow-sm`}>
+                               {task.completed && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
+                            </div>
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            {editingId === task.id ? (
+                              <input 
+                                autoFocus
+                                value={editValue}
+                                onChange={e => setEditValue(e.target.value)}
+                                onBlur={() => handleUpdateTask(task)}
+                                onKeyDown={e => { if (e.key === 'Enter') handleUpdateTask(task); else if (e.key === 'Escape') setEditingId(null); }}
+                                className="w-full bg-slate-950/50 border border-indigo-500/50 rounded-md px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
+                                style={{ color: 'var(--color-text-primary)' }}
+                              />
+                            ) : (
+                              <>
+                                <h3 className={`text-sm font-bold truncate ${task.completed ? 'line-through decoration-2 decoration-indigo-500/50' : ''}`} style={{ color: task.completed ? 'var(--color-text-muted)' : 'var(--color-text-primary)' }}>{task.text}</h3>
+                                <p className="text-[10px] font-bold mt-1 uppercase tracking-widest" style={{ color: 'var(--color-text-muted)' }}>{task.category}</p>
+                              </>
+                            )}
                           </div>
-                          <div className="flex gap-2">
-                            <button className="text-white/40 hover:text-white transition-colors" style={{ fontFamily: 'var(--font-data)', fontSize: '10px', color: 'var(--color-text-muted)' }}>
-                              place
+                          <div className="flex gap-2 shrink-0">
+                            <button onClick={() => startEditing(task)} className="p-1.5 rounded-md text-white/40 hover:text-white hover:bg-white/5 transition-all">
+                              <Edit2 className="w-3.5 h-3.5" />
                             </button>
-                            <button className="text-white/40 hover:text-white transition-colors">
+                            <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-white/40 hover:text-rose-400 hover:bg-rose-500/10 transition-all">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
@@ -419,19 +517,42 @@ const GryndFlowV2 = () => {
                       .map(task => (
                         <div 
                           key={task.id}
-                          style={{ height: task.isTimeBlock ? `${(task.duration / 60) * 100}px` : 'auto' }}
-                          className={`${CATEGORIES[task.category]?.color || 'bg-slate-700'} ${CATEGORIES[task.category]?.border || 'border-slate-600'} border-l-4 p-4 rounded-r-md shadow-2xl shadow-black/40 mb-2 transition-transform hover:translate-x-1`}
+                          style={{ minHeight: task.isTimeBlock ? `${Math.max((task.duration / 60) * 100, 70)}px` : 'auto' }}
+                          className={`${CATEGORIES[task.category]?.color || 'bg-slate-700'} ${CATEGORIES[task.category]?.border || 'border-slate-600'} border-l-4 p-4 rounded-r-md shadow-2xl shadow-black/40 mb-2 transition-all hover:translate-x-1 ${task.completed ? 'brightness-50' : ''}`}
                         >
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <h3 className="text-sm font-bold text-white" style={{ color: 'var(--color-text-primary)' }}>{task.text}</h3>
-                              <p className="text-[10px] text-white/70 font-medium mt-1 uppercase tracking-wider">
-                                {task.time} - {task.endTime || '30m'} • {task.category}
-                              </p>
-                            </div>
-                            <button className="text-white/40 hover:text-white transition-colors">
-                              <Trash2 className="w-3.5 h-3.5" />
+                          <div className="flex justify-between items-start gap-4 h-full">
+                            <button onClick={() => handleToggleComplete(task)} className="mt-0.5 shrink-0 transition-transform hover:scale-110">
+                              <div className={`w-5 h-5 rounded-md border-2 ${task.completed ? 'bg-white border-white' : 'border-white/50 hover:border-white'} flex items-center justify-center transition-colors shadow-sm`}>
+                                 {task.completed && <Check className="w-3.5 h-3.5 text-black" strokeWidth={3} />}
+                              </div>
                             </button>
+                            <div className="flex-1 min-w-0 flex flex-col justify-center h-full">
+                              {editingId === task.id ? (
+                                <input 
+                                  autoFocus
+                                  value={editValue}
+                                  onChange={e => setEditValue(e.target.value)}
+                                  onBlur={() => handleUpdateTask(task)}
+                                  onKeyDown={e => { if (e.key === 'Enter') handleUpdateTask(task); else if (e.key === 'Escape') setEditingId(null); }}
+                                  className="w-full bg-black/20 border border-white/30 rounded-md px-3 py-1.5 text-sm font-medium text-white focus:outline-none focus:ring-1 focus:ring-white/50 placeholder-white/50"
+                                />
+                              ) : (
+                                <>
+                                  <h3 className={`text-sm font-bold text-white truncate ${task.completed ? 'line-through decoration-2 decoration-white/50' : ''}`}>{task.text}</h3>
+                                  <p className="text-[10px] text-white/80 font-bold mt-1 uppercase tracking-widest truncate">
+                                    {task.time} - {task.endTime || '30m'} • {task.category}
+                                  </p>
+                                </>
+                              )}
+                            </div>
+                            <div className="flex gap-2 shrink-0">
+                              <button onClick={() => startEditing(task)} className="p-1.5 rounded-md text-white/60 hover:text-white hover:bg-white/20 transition-all">
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-white/60 hover:text-white hover:bg-white/20 transition-all">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))}

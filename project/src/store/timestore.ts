@@ -7,6 +7,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { calculateFocusScore } from '../services/focusScore';
 import { computeIdealVsActual } from '../services/idealVsActual';
 import { logEvent } from '../utils/logEvent';
+import { addToQueue, registerOutboxHandler, startQueueProcessor } from '../utils/outboxQueue';
+import { validateExplanation } from '../utils/validateExplanation';
 
 export interface TimerSession {
   id: string;
@@ -41,7 +43,22 @@ export interface TimerSession {
   browserInfo?: any;
 }
 
-type TimerEventType = 'start' | 'pause' | 'resume' | 'interrupt' | 'abandon' | 'complete' | 'away_detected' | 'idle_detected' | 'reflection_start' | 'reflection_submitted';
+type TimerEventType =
+  | 'start'
+  | 'pause'
+  | 'resume'
+  | 'RESUME'
+  | 'interrupt'
+  | 'INTERRUPTED'
+  | 'RETURN'
+  | 'AWAY'
+  | 'BREAK_END'
+  | 'abandon'
+  | 'complete'
+  | 'away_detected'
+  | 'idle_detected'
+  | 'reflection_start'
+  | 'reflection_submitted';
 
 type EventCategory = 'session' | 'reflection' | 'system';
 type SessionPhase = 'active' | 'inactive' | 'reflection' | 'system' | 'completed';
@@ -51,19 +68,58 @@ type TimerEvent = {
   timestamp: number;
 };
 
+type QueueSessionPayload = Omit<TimerSession, 'startTime' | 'endTime'> & {
+  startTime: string;
+  endTime?: string;
+};
+
+type SaveSessionOutboxPayload = {
+  session: QueueSessionPayload;
+  events: TimerEvent[];
+};
+
+type LogSessionEventOutboxPayload = {
+  sessionId: string;
+  eventType: string;
+  eventCategory: string;
+  sessionPhase: string;
+  metadata: Record<string, unknown>;
+};
+
 type SessionState =
   | 'idle'
   | 'focus'
   | 'paused'
   | 'interrupted'
-  | 'away';
+  | 'away'
+  | 'away_running'
+  | 'interrupted_running'
+  | 'away_pending_explanation'
+  | 'interrupted_pending_reason';
 
-type ReflectionPromptType = 'resume_reason' | 'away_reflection';
+type EnforcementType = 'AWAY' | 'INTERRUPTED';
+type ReflectionPromptType = 'resume_reason' | 'away_reflection' | 'enforcement_reason';
+
+interface PendingEnforcementState {
+  type: EnforcementType;
+  minWords: number;
+  startedAt: number;
+  durationSeconds?: number;
+}
+
+interface DailyEnforcementStats {
+  dateKey: string;
+  totalEnforcements: number;
+  quickBreakUses: number;
+  totalLostSeconds: number;
+}
 
 interface ReflectionPromptState {
   type: ReflectionPromptType;
   minWords?: number;
   triggeredAt: number;
+  source?: EnforcementType;
+  validationError?: string | null;
 }
 
 interface TimerState {
@@ -110,6 +166,12 @@ interface TimerState {
   reflectionRequired: boolean;
   reflectionType: 'away' | 'idle' | null;
   reflectionStartTime: number | null;
+  pendingEnforcement: PendingEnforcementState | null;
+  lastAwayOrInterruptionAt: number | null;
+  lastEnforcementError: string | null;
+  interruptionStartTime: number | null;
+  dailyEnforcementStats: DailyEnforcementStats;
+  lastEnforcementFeedback: string | null;
   
   // Actions
   startSession: (subject: string, duration?: number, sessionType?: 'focus' | 'break' | 'interrupted', subjectId?: string, topicId?: string) => void;
@@ -120,8 +182,15 @@ interface TimerState {
   triggerAwayReflection: () => void;
   submitAwayReflection: (reflection: string) => void;
   submitReturnReflection: (reflection: string) => void;
+  markAwayRunning: () => void;
+  markInterruptedRunning: () => void;
+  handleReturnFromAwayOrInterruption: (trigger: 'visibility' | 'activity' | 'tab_return' | 'interrupt_return') => void;
+  submitEnforcementExplanation: (reflection: string, typingTimeMs?: number) => boolean;
+  useQuickBreakShortcut: () => boolean;
+  restorePendingEnforcement: () => void;
   stop: (reason?: string, details?: string, wasEndedEarly?: boolean) => void;
   complete: (focusRating?: number, reflection?: string, tags?: string[], takeBreak?: boolean) => void;
+  endBreak: (reason?: 'manual_end' | 'timer_end') => void;
   startBreakTimer: (durationSeconds: number) => void;
   dismissBreakPrompt: () => void;
   updatePreciseTime: () => void;
@@ -136,6 +205,7 @@ interface TimerState {
   updateFocusPatterns: (session: TimerSession) => Promise<void>;
   generateBehavioralInsights: () => Promise<void>;
   transitionState: (newState: SessionState, metadata?: Record<string, unknown>) => TimerEvent | null;
+  recoverUnfinishedSessionFromDatabase: () => Promise<void>;
 }
 
 // Safe localStorage wrapper
@@ -215,6 +285,12 @@ const initializeSafeDefaults = () => ({
   reflectionRequired: false,
   reflectionType: null,
   reflectionStartTime: null,
+  pendingEnforcement: null,
+  lastAwayOrInterruptionAt: null,
+  lastEnforcementError: null,
+  interruptionStartTime: null,
+  dailyEnforcementStats: createDailyEnforcementStats(),
+  lastEnforcementFeedback: null,
 });
 
 // Helper function to save sessions
@@ -352,7 +428,7 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
   let pauseStart: number | null = null;
 
   for (const event of sorted) {
-    if (event.type === 'start' || event.type === 'resume') {
+    if (event.type === 'start' || event.type === 'resume' || event.type === 'RESUME' || event.type === 'RETURN') {
       if (pauseStart !== null) {
         pauseMs += Math.max(0, event.timestamp - pauseStart);
         pauseStart = null;
@@ -363,7 +439,14 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
       continue;
     }
 
-    if (event.type === 'pause' || event.type === 'away_detected' || event.type === 'idle_detected' || event.type === 'reflection_start') {
+    if (
+      event.type === 'pause' ||
+      event.type === 'away_detected' ||
+      event.type === 'idle_detected' ||
+      event.type === 'reflection_start' ||
+      event.type === 'AWAY' ||
+      event.type === 'INTERRUPTED'
+    ) {
       if (activeStart !== null) {
         focusMs += Math.max(0, event.timestamp - activeStart);
         activeStart = null;
@@ -393,6 +476,35 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
   };
 };
 
+const serializeSessionForQueue = (session: TimerSession): QueueSessionPayload => ({
+  ...session,
+  startTime: session.startTime instanceof Date ? session.startTime.toISOString() : new Date(session.startTime).toISOString(),
+  endTime: session.endTime
+    ? session.endTime instanceof Date
+      ? session.endTime.toISOString()
+      : new Date(session.endTime).toISOString()
+    : undefined,
+});
+
+const hydrateSessionFromQueue = (payload: QueueSessionPayload): TimerSession => ({
+  ...payload,
+  startTime: new Date(payload.startTime),
+  endTime: payload.endTime ? new Date(payload.endTime) : undefined,
+});
+
+const getHeartbeatElapsedFromMetadata = (metadata: unknown): number | null => {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  const elapsed = (metadata as { elapsed?: unknown }).elapsed;
+  if (typeof elapsed !== 'number' || Number.isNaN(elapsed) || elapsed < 0) {
+    return null;
+  }
+
+  return Math.floor(elapsed);
+};
+
 const mapStateToEvent = (state: SessionState) => {
   switch (state) {
     case 'focus':
@@ -401,6 +513,13 @@ const mapStateToEvent = (state: SessionState) => {
       return 'pause';
     case 'interrupted':
       return 'interrupt';
+    case 'away_running':
+      return 'AWAY';
+    case 'interrupted_running':
+      return 'INTERRUPTED';
+    case 'away_pending_explanation':
+    case 'interrupted_pending_reason':
+      return 'RETURN';
     case 'idle':
       return 'idle_detected';
     case 'away':
@@ -412,7 +531,7 @@ const mapStateToEvent = (state: SessionState) => {
 
 const getEventCategory = (eventType: TimerEventType): EventCategory => {
   if (eventType.includes('reflection')) return 'reflection';
-  if (['start', 'resume', 'pause', 'interrupt'].includes(eventType)) return 'session';
+  if (['start', 'resume', 'RESUME', 'pause', 'interrupt', 'INTERRUPTED', 'RETURN', 'AWAY', 'BREAK_END'].includes(eventType)) return 'session';
   return 'system';
 };
 
@@ -420,11 +539,13 @@ const getSessionPhase = (state: SessionState, eventType: TimerEventType): Sessio
   if (eventType.includes('reflection')) return 'reflection';
   if (eventType === 'complete') return 'completed';
   if (state === 'focus') return 'active';
-  if (state === 'away' || state === 'idle') return 'inactive';
+  if (state === 'away' || state === 'idle' || state === 'away_running' || state === 'interrupted_running' || state === 'away_pending_explanation' || state === 'interrupted_pending_reason') return 'inactive';
   return 'system';
 };
 
 let transitionQueue: Promise<void> = Promise.resolve();
+const HEARTBEAT_INTERVAL_SECONDS = 20;
+const heartbeatIntervalsBySession = new Map<string, number>();
 const enqueueTransition = (task: () => Promise<void>) => {
   transitionQueue = transitionQueue
     .then(task)
@@ -433,12 +554,56 @@ const enqueueTransition = (task: () => Promise<void>) => {
     });
 };
 
+const enqueueSessionEvent = (payload: LogSessionEventOutboxPayload) => {
+  addToQueue('log_session_event', payload);
+};
+
 const countWords = (value: string): number =>
   value
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .length;
+
+const getMinimumWordsForDuration = (durationSeconds: number): number => {
+  if (durationSeconds < 2 * 60) return 0;
+  if (durationSeconds < 5 * 60) return 5;
+  if (durationSeconds < 10 * 60) return 20;
+  return 50;
+};
+
+const ENFORCEMENT_GRACE_THRESHOLD = 4;
+const QUICK_BREAK_LIMIT_PER_DAY = 2;
+
+const getLocalDateKey = (): string => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const createDailyEnforcementStats = (): DailyEnforcementStats => ({
+  dateKey: getLocalDateKey(),
+  totalEnforcements: 0,
+  quickBreakUses: 0,
+  totalLostSeconds: 0,
+});
+
+const normalizeDailyEnforcementStats = (stats?: DailyEnforcementStats | null): DailyEnforcementStats => {
+  const todayKey = getLocalDateKey();
+  if (!stats || stats.dateKey !== todayKey) {
+    return createDailyEnforcementStats();
+  }
+  return stats;
+};
+
+const applyEnforcementGrace = (minWords: number, totalEnforcementsToday: number): number => {
+  if (totalEnforcementsToday < ENFORCEMENT_GRACE_THRESHOLD) {
+    return minWords;
+  }
+  return Math.max(5, Math.floor(minWords * 0.75));
+};
 
 const getCurrentSessionElapsedSeconds = (state: Pick<
   TimerState,
@@ -458,6 +623,45 @@ const getCurrentSessionElapsedSeconds = (state: Pick<
   const safeTotalTime = typeof state.totalTime === 'number' && state.totalTime > 0 ? state.totalTime : 0;
   const safeTimeLeft = typeof state.timeLeft === 'number' && state.timeLeft >= 0 ? state.timeLeft : 0;
   return Math.max(0, safeTotalTime - safeTimeLeft);
+};
+
+const stopHeartbeatInterval = (sessionId: string): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const intervalId = heartbeatIntervalsBySession.get(sessionId);
+  if (typeof intervalId === 'number') {
+    window.clearInterval(intervalId);
+    heartbeatIntervalsBySession.delete(sessionId);
+  }
+};
+
+const startHeartbeatInterval = (sessionId: string, get: () => TimerState): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  stopHeartbeatInterval(sessionId);
+  const intervalId = window.setInterval(() => {
+    const state = get();
+    if (!state.currentSessionId || state.currentSessionId !== sessionId || !state.isRunning) {
+      return;
+    }
+
+    const elapsed = getCurrentSessionElapsedSeconds(state);
+    enqueueTransition(async () => {
+      enqueueSessionEvent({
+        sessionId,
+        eventType: 'HEARTBEAT',
+        eventCategory: 'system',
+        sessionPhase: 'active',
+        metadata: { elapsed }
+      });
+    });
+  }, HEARTBEAT_INTERVAL_SECONDS * 1000);
+
+  heartbeatIntervalsBySession.set(sessionId, intervalId);
 };
 
 const getElapsedSeconds = (params: {
@@ -567,90 +771,107 @@ export const useTimerStore = create<TimerState>()(
 
       // Enhanced analytics methods
       saveSessionToDatabase: async (session: TimerSession, events: TimerEvent[] = []) => {
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (!user) {
-            console.warn('No authenticated user for session save');
-            return;
-          }
-
-          const deviceInfo = getDeviceInfo();
-          const derivedMetrics = computeBasicSessionMetrics(events);
-          const shouldUseFallback = events.length === 0;
-          const fallbackFocusSeconds = Math.max(0, Math.round(session.activeFocusSeconds || 0));
-          const fallbackPauseSeconds = Math.max(0, Math.round(session.totalPauseDuration || 0));
-          const focusSeconds = shouldUseFallback ? fallbackFocusSeconds : derivedMetrics.focusSeconds;
-          const pauseSeconds = shouldUseFallback ? fallbackPauseSeconds : derivedMetrics.pauseSeconds;
-          const pauseCount = shouldUseFallback ? (session.pauseCount || 0) : derivedMetrics.pauseCount;
-          const totalTrackedSeconds = focusSeconds + pauseSeconds;
-          
-          // Calculate productivity score
-          const activeFocusRatio = focusSeconds > 0 && totalTrackedSeconds > 0
-            ? focusSeconds / totalTrackedSeconds
-            : 0;
-          const completionBonus = session.completed ? 0.2 : 0;
-          const productivityScore = Math.min(1.0, activeFocusRatio + completionBonus);
-          const focusScore = calculateFocusScore({
-            totalActiveSeconds: focusSeconds,
-            totalPauseSeconds: pauseSeconds,
-            totalInterruptionSeconds: 0,
-            interruptionCount: session.interruptionCount || 0,
-            totalSessionSeconds: totalTrackedSeconds,
-          });
-          const idealVsActual = computeIdealVsActual({
-            planned_duration_seconds: session.duration,
-            active_focus_seconds: focusSeconds,
-          });
-          const completionStatus = session.completed
-            ? 'completed'
-            : session.type === 'interrupted'
-              ? 'interrupted'
-              : 'abandoned';
-
-          const sessionData = {
-            user_id: user.id,
-            session_id: session.sessionId,
-            subject_id: session.subjectId,
-            topic_id: session.topicId,
-            start_time: session.startTime.toISOString(),
-            end_time: session.endTime?.toISOString(),
-            planned_duration_seconds: session.duration,
-            actual_duration_seconds: Math.max(0, session.actualDuration || totalTrackedSeconds),
-            active_focus_seconds: focusSeconds,
-            pause_count: pauseCount,
-            total_pause_duration_seconds: pauseSeconds,
-            total_interruption_seconds: 0,
-            focus_score: focusScore,
-            adherence_score: idealVsActual.adherenceScore,
-            delta_seconds: idealVsActual.deltaSeconds,
-            adherence_status: idealVsActual.status,
-            focus_rating: session.focusRating,
-            productivity_score: productivityScore,
-            interruption_count: session.interruptionCount || 0,
-            completion_status: completionStatus,
-            stop_reason: session.stopReason,
-            stop_reason_details: session.stopReasonDetails,
-            session_notes: session.reflection,
-            tags: session.tags,
-            mood_before: session.moodBefore,
-            mood_after: session.moodAfter,
-            energy_level: session.energyLevel,
-            device_type: deviceInfo.deviceType,
-            browser_info: deviceInfo.browserInfo
-          };
-
-          const { error } = await supabase
-            .from('session_analytics')
-            .insert(sessionData);
-
-          if (error) {
-            console.error('Failed to save session to database:', error);
-          } else {
-            console.log('✅ Session saved to database:', session.sessionId);
-          }
-        } catch (error) {
-          console.error('Error saving session to database:', error);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          throw new Error('No authenticated user for session save');
         }
+
+        const normalizedStartTime = session.startTime instanceof Date ? session.startTime : new Date(session.startTime);
+        const normalizedEndTime = session.endTime
+          ? session.endTime instanceof Date
+            ? session.endTime
+            : new Date(session.endTime)
+          : undefined;
+
+        const deviceInfo = getDeviceInfo();
+        const derivedMetrics = computeBasicSessionMetrics(events);
+        const focusSeconds = derivedMetrics.focusSeconds;
+        const pauseSeconds = derivedMetrics.pauseSeconds;
+        const pauseCount = derivedMetrics.pauseCount;
+        const totalTrackedSeconds = focusSeconds + pauseSeconds;
+
+        const { data: heartbeatRows, error: heartbeatError } = await supabase
+          .from('session_events')
+          .select('metadata')
+          .eq('session_id', session.sessionId)
+          .eq('user_id', user.id)
+          .eq('event_type', 'HEARTBEAT')
+          .order('event_timestamp', { ascending: false })
+          .limit(1);
+
+        if (heartbeatError) {
+          throw heartbeatError;
+        }
+
+        const heartbeatElapsedSeconds = getHeartbeatElapsedFromMetadata(heartbeatRows?.[0]?.metadata) ?? 0;
+        const actualDurationSeconds = Math.max(0, heartbeatElapsedSeconds, totalTrackedSeconds);
+
+        const activeFocusRatio = focusSeconds > 0 && totalTrackedSeconds > 0
+          ? focusSeconds / totalTrackedSeconds
+          : 0;
+        const completionBonus = session.completed ? 0.2 : 0;
+        const productivityScore = Math.min(1.0, activeFocusRatio + completionBonus);
+        const focusScore = calculateFocusScore({
+          totalActiveSeconds: focusSeconds,
+          totalPauseSeconds: pauseSeconds,
+          totalInterruptionSeconds: 0,
+          interruptionCount: session.interruptionCount || 0,
+          totalSessionSeconds: totalTrackedSeconds,
+        });
+        const idealVsActual = computeIdealVsActual({
+          planned_duration_seconds: session.duration,
+          active_focus_seconds: focusSeconds,
+        });
+        const completionStatus = session.completed
+          ? 'completed'
+          : session.type === 'interrupted'
+            ? 'interrupted'
+            : 'abandoned';
+
+        const sessionData = {
+          user_id: user.id,
+          session_id: session.sessionId,
+          subject_id: session.subjectId,
+          topic_id: session.topicId,
+          start_time: normalizedStartTime.toISOString(),
+          end_time: normalizedEndTime?.toISOString(),
+          planned_duration_seconds: session.duration,
+          actual_duration_seconds: actualDurationSeconds,
+          active_focus_seconds: focusSeconds,
+          pause_count: pauseCount,
+          total_pause_duration_seconds: pauseSeconds,
+          total_interruption_seconds: 0,
+          focus_score: focusScore,
+          adherence_score: idealVsActual.adherenceScore,
+          delta_seconds: idealVsActual.deltaSeconds,
+          adherence_status: idealVsActual.status,
+          focus_rating: session.focusRating,
+          productivity_score: productivityScore,
+          interruption_count: session.interruptionCount || 0,
+          completion_status: completionStatus,
+          stop_reason: session.stopReason,
+          stop_reason_details: session.stopReasonDetails,
+          session_notes: session.reflection,
+          tags: session.tags,
+          mood_before: session.moodBefore,
+          mood_after: session.moodAfter,
+          energy_level: session.energyLevel,
+          device_type: deviceInfo.deviceType,
+          browser_info: deviceInfo.browserInfo
+        };
+
+        const { error } = await supabase
+          .from('session_analytics')
+          .upsert(sessionData, {
+            onConflict: 'session_id',
+            ignoreDuplicates: false
+          });
+
+        if (error) {
+          throw error;
+        }
+
+        console.log('Session saved to database:', session.sessionId);
       },
 
       updateFocusPatterns: async (session: TimerSession) => {
@@ -876,6 +1097,7 @@ export const useTimerStore = create<TimerState>()(
 
           if (snapshot.isRunning && remaining > 0) {
             precisionTimer.start();
+            startHeartbeatInterval(snapshot.sessionId, get);
           }
 
           set({
@@ -913,6 +1135,9 @@ export const useTimerStore = create<TimerState>()(
             reflectionRequired: false,
             reflectionType: null,
             reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
           });
 
           const nextSnapshot = createCrossTabSnapshot(get());
@@ -926,6 +1151,190 @@ export const useTimerStore = create<TimerState>()(
           }
         } catch (error) {
           console.error('Failed to recover active session:', error);
+        }
+      },
+
+      recoverUnfinishedSessionFromDatabase: async () => {
+        try {
+          if (get().currentSessionId) {
+            return;
+          }
+
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) {
+            return;
+          }
+
+          const { data: latestEvents, error: latestEventsError } = await supabase
+            .from('session_events')
+            .select('session_id, event_type, event_timestamp, event_sequence, metadata')
+            .eq('user_id', user.id)
+            .order('event_timestamp', { ascending: false })
+            .order('event_sequence', { ascending: false })
+            .limit(500);
+
+          if (latestEventsError) {
+            throw latestEventsError;
+          }
+
+          const latestBySession = new Map<string, any>();
+          (latestEvents || []).forEach((event) => {
+            if (!event?.session_id || latestBySession.has(event.session_id)) {
+              return;
+            }
+            latestBySession.set(event.session_id, event);
+          });
+
+          const pendingSessionEvent = Array.from(latestBySession.values())
+            .filter((event) => {
+              const eventType = String(event.event_type || '').toLowerCase();
+              return !['complete', 'abandon', 'interrupt'].includes(eventType);
+            })
+            .sort(
+              (left, right) =>
+                new Date(right.event_timestamp).getTime() - new Date(left.event_timestamp).getTime()
+            )[0];
+
+          if (!pendingSessionEvent?.session_id) {
+            return;
+          }
+
+          const { data: eventRows, error: eventsError } = await supabase
+            .from('session_events')
+            .select('event_type, event_timestamp, event_sequence, metadata')
+            .eq('user_id', user.id)
+            .eq('session_id', pendingSessionEvent.session_id)
+            .order('event_timestamp', { ascending: true })
+            .order('event_sequence', { ascending: true });
+
+          if (eventsError) {
+            throw eventsError;
+          }
+
+          const events = eventRows || [];
+          const lastEventType = String(events[events.length - 1]?.event_type || '').toLowerCase();
+          if (['complete', 'abandon', 'interrupt'].includes(lastEventType)) {
+            return;
+          }
+
+          const maxHeartbeatElapsed = events.reduce((maxElapsed, event) => {
+            const elapsed = getHeartbeatElapsedFromMetadata(event.metadata);
+            return Math.max(maxElapsed, elapsed ?? 0);
+          }, 0);
+
+          const firstEvent = events[0];
+          const startMetadata = (firstEvent?.metadata || {}) as Record<string, unknown>;
+          const sessionStart = firstEvent?.event_timestamp
+            ? new Date(firstEvent.event_timestamp)
+            : new Date();
+          const elapsedSeconds = Math.max(0, maxHeartbeatElapsed);
+          const totalDuration = Math.max(
+            60,
+            typeof startMetadata.duration === 'number'
+              ? Math.floor(startMetadata.duration)
+              : 1500
+          );
+          const remaining = Math.max(0, totalDuration - elapsedSeconds);
+          const isPaused = ['pause', 'away_detected', 'idle_detected', 'reflection_start', 'away', 'interrupted', 'return'].includes(lastEventType);
+          const isInterrupted = String(startMetadata.sessionType || '').toLowerCase() === 'interrupted';
+          const recoveredSubject = typeof startMetadata.subject === 'string' && startMetadata.subject
+            ? startMetadata.subject
+            : isInterrupted
+              ? 'Recovered interrupted session'
+              : 'Recovered session';
+          const recoveredSubjectId =
+            typeof startMetadata.subjectId === 'string' ? startMetadata.subjectId : undefined;
+          const recoveredTopicId =
+            typeof startMetadata.topicId === 'string' ? startMetadata.topicId : undefined;
+          const recoveredType: TimerSession['type'] = isInterrupted ? 'interrupted' : 'focus';
+
+          const precisionTimer = new PrecisionTimer(isInterrupted ? totalDuration : Math.max(remaining, 1));
+          attachPrecisionTimerHandlers(precisionTimer, recoveredSubject, recoveredType, set, get);
+
+          if (!isPaused && (!isInterrupted || remaining > 0)) {
+            precisionTimer.start();
+            startHeartbeatInterval(pendingSessionEvent.session_id, get);
+          }
+
+          const existingSessions = get().sessions || [];
+          const existingSession = existingSessions.find((session) => session.sessionId === pendingSessionEvent.session_id);
+          const recoveredSession: TimerSession = existingSession || {
+            id: pendingSessionEvent.session_id,
+            sessionId: pendingSessionEvent.session_id,
+            subject: recoveredSubject,
+            subjectId: recoveredSubjectId,
+            topicId: recoveredTopicId,
+            type: recoveredType,
+            startTime: sessionStart,
+            duration: totalDuration,
+            actualDuration: elapsedSeconds,
+            completed: false,
+            pauseCount: 0,
+            totalPauseDuration: 0,
+            interruptionCount: isInterrupted ? 1 : 0,
+            activeFocusSeconds: elapsedSeconds,
+          };
+
+          const mergedSessions = existingSession
+            ? existingSessions.map((session) => (session.sessionId === recoveredSession.sessionId ? recoveredSession : session))
+            : [recoveredSession, ...existingSessions];
+
+          set({
+            currentSessionId: pendingSessionEvent.session_id,
+            timeLeft: isInterrupted ? totalDuration : Math.max(0, Math.ceil(remaining)),
+            totalTime: totalDuration,
+            preciseTimeLeft: isInterrupted ? totalDuration : remaining,
+            isRunning: !isPaused,
+            sessionType: recoveredType,
+            subject: recoveredSession.subject,
+            subjectId: recoveredSubjectId || null,
+            topicId: recoveredTopicId || null,
+            syllabusId: recoveredSession.syllabusId || null,
+            startTime: sessionStart.toISOString(),
+            precisionTimer,
+            sessions: mergedSessions,
+            sessionStartTime: sessionStart.getTime(),
+            isInterruptedMode: isInterrupted,
+            interruptedTime: isInterrupted ? elapsedSeconds : 0,
+            elapsedOffsetSeconds: elapsedSeconds,
+            sessionOwnerTabId: tabId,
+            isSessionLeader: true,
+            pauseStartTime: isPaused ? performance.now() : null,
+            totalPauseTime: 0,
+            pauseCount: 0,
+            interruptionCount: isInterrupted ? 1 : 0,
+            lastActiveTime: !isPaused ? performance.now() : 0,
+            activeFocusTime: elapsedSeconds,
+            sessionEvents: [],
+            currentState: isInterrupted
+              ? 'interrupted'
+              : !isPaused
+                ? 'focus'
+                : 'paused',
+            lastEventTime: Date.now(),
+            resumeReasonRequired: isPaused,
+            activeReflectionPrompt: null,
+            awayReflectionRequired: false,
+            lastUserInteractionAt: Date.now(),
+            reflectionRequired: false,
+            reflectionType: null,
+            reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
+          });
+
+          const snapshot = createCrossTabSnapshot(get());
+          writeActiveSessionSnapshot(snapshot);
+          if (snapshot) {
+            emitCrossTabEvent({
+              type: 'SYNC_ACTIVE_SESSION',
+              snapshot,
+              sourceTabId: tabId
+            });
+          }
+        } catch (error) {
+          console.error('Failed to recover unfinished session from database:', error);
         }
       },
 
@@ -945,7 +1354,19 @@ export const useTimerStore = create<TimerState>()(
 
         const overrideEventType = (metadata as { eventType?: TimerEventType }).eventType;
         let eventType = overrideEventType ?? mapStateToEvent(newState);
-        if (!overrideEventType && newState === 'focus' && (prevState === 'paused' || prevState === 'away' || prevState === 'idle')) {
+        if (
+          !overrideEventType &&
+          newState === 'focus' &&
+          (
+            prevState === 'paused' ||
+            prevState === 'away' ||
+            prevState === 'idle' ||
+            prevState === 'away_running' ||
+            prevState === 'interrupted_running' ||
+            prevState === 'away_pending_explanation' ||
+            prevState === 'interrupted_pending_reason'
+          )
+        ) {
           eventType = 'resume';
         }
         if (!overrideEventType && newState === 'idle' && (metadata as { completed?: boolean }).completed) {
@@ -979,40 +1400,19 @@ export const useTimerStore = create<TimerState>()(
         }
 
         enqueueTransition(async () => {
-          try {
-            const error = await logEvent({
-              sessionId,
-              type: eventType,
-              eventCategory,
-              sessionPhase,
-              metadata: {
-                ...metadata,
-                from: prevState,
-                to: newState,
-                duration,
-                event_index: eventIndex
-              }
-            });
-            if (error) {
-              console.error('Event insert failed:', {
-                sessionId,
-                eventType,
-                from: prevState,
-                to: newState,
-                duration,
-                error
-              });
-            }
-          } catch (error) {
-            console.error('Event insert failed:', {
-              sessionId,
-              eventType,
+          enqueueSessionEvent({
+            sessionId,
+            eventType,
+            eventCategory,
+            sessionPhase,
+            metadata: {
+              ...metadata,
               from: prevState,
               to: newState,
               duration,
-              error
-            });
-          }
+              event_index: eventIndex
+            }
+          });
         });
 
         return event;
@@ -1046,6 +1446,7 @@ export const useTimerStore = create<TimerState>()(
           
           precisionTimer.start();
           attachPrecisionTimerHandlers(precisionTimer, subject, sessionType, set, get);
+          startHeartbeatInterval(sessionId, get);
 
           const deviceInfo = getDeviceInfo();
           const newSession: TimerSession = {
@@ -1108,6 +1509,9 @@ export const useTimerStore = create<TimerState>()(
             reflectionRequired: false,
             reflectionType: null,
             reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
           });
 
           const transitionState = get().transitionState;
@@ -1115,9 +1519,17 @@ export const useTimerStore = create<TimerState>()(
             transitionState('focus', {
               sessionType,
               subject: subject.trim(),
+              subjectId: subjectId || null,
+              topicId: topicId || null,
               duration
             });
           }
+
+          const latestEvents = get().sessionEvents;
+          addToQueue('save_session_analytics', {
+            session: serializeSessionForQueue(newSession),
+            events: latestEvents,
+          } as SaveSessionOutboxPayload);
 
           saveSessionsToStorage(updatedSessions);
 
@@ -1142,6 +1554,8 @@ export const useTimerStore = create<TimerState>()(
 
       pause: (reason, requireResumeReason = true, targetState: SessionState = 'paused') => {
         try {
+          const trimmedReason = reason?.trim();
+
           const { precisionTimer, pauseCount } = get();
           if (precisionTimer && typeof precisionTimer.pause === 'function') {
             precisionTimer.pause();
@@ -1167,7 +1581,7 @@ export const useTimerStore = create<TimerState>()(
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState(targetState, reason ? { reason } : {});
+            transitionState(targetState, trimmedReason ? { reason: trimmedReason } : {});
           }
 
           const snapshot = createCrossTabSnapshot(get());
@@ -1191,33 +1605,9 @@ export const useTimerStore = create<TimerState>()(
             precisionTimer,
             pauseStartTime,
             totalPauseTime,
-            currentSessionId,
-            pauseCount,
-            resumeReasonRequired,
-            awayReflectionRequired,
           } = get();
 
-          if (awayReflectionRequired) {
-            set({
-              activeReflectionPrompt: {
-                type: 'away_reflection',
-                minWords: 50,
-                triggeredAt: Date.now(),
-              }
-            });
-            return;
-          }
-
           const trimmedReason = reason?.trim();
-          if (resumeReasonRequired && !trimmedReason) {
-            set({
-              activeReflectionPrompt: {
-                type: 'resume_reason',
-                triggeredAt: Date.now(),
-              }
-            });
-            return;
-          }
 
           if (precisionTimer && typeof precisionTimer.start === 'function') {
             precisionTimer.start();
@@ -1239,13 +1629,17 @@ export const useTimerStore = create<TimerState>()(
             totalPauseTime: newTotalPauseTime,
             lastActiveTime: performance.now(),
             resumeReasonRequired: false,
+            awayReflectionRequired: false,
             activeReflectionPrompt: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
             lastUserInteractionAt: Date.now(),
           });
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState('focus', trimmedReason ? { reason: trimmedReason } : {});
+            transitionState('focus', trimmedReason ? { reason: trimmedReason, eventType: 'RESUME' } : { eventType: 'RESUME' });
           }
 
           const snapshot = createCrossTabSnapshot(get());
@@ -1264,56 +1658,383 @@ export const useTimerStore = create<TimerState>()(
       },
 
       requestResume: () => {
-        const { awayReflectionRequired, resumeReasonRequired } = get();
-
-        if (awayReflectionRequired) {
-          set({
-            activeReflectionPrompt: {
-              type: 'away_reflection',
-              minWords: 50,
-              triggeredAt: Date.now(),
-            }
-          });
+        const state = get();
+        if (state.currentState === 'away_running') {
+          state.handleReturnFromAwayOrInterruption('activity');
           return;
         }
-
-        if (resumeReasonRequired) {
-          set({
-            activeReflectionPrompt: {
-              type: 'resume_reason',
-              triggeredAt: Date.now(),
-            }
-          });
+        if (state.currentState === 'interrupted_running') {
+          state.handleReturnFromAwayOrInterruption('interrupt_return');
           return;
         }
-
-        get().resume();
+        state.resume();
       },
 
       dismissReflectionPrompt: () => {
         set({ activeReflectionPrompt: null });
       },
 
-      triggerAwayReflection: () => {
+      markAwayRunning: () => {
         const state = get();
-
-        if (!state.currentSessionId || !state.isRunning || state.awayReflectionRequired) {
+        if (!state.currentSessionId || !state.isRunning || state.pendingEnforcement) {
           return;
         }
 
-        state.pause('away_detection', false, 'away');
+        const now = Date.now();
+        const hasExistingRun =
+          state.currentState === 'away_running' || state.currentState === 'interrupted_running';
+
+        state.pause('away_detection', false, 'away_running');
         set({
-          awayReflectionRequired: true,
+          lastAwayOrInterruptionAt: hasExistingRun
+            ? state.lastAwayOrInterruptionAt ?? now
+            : now,
           resumeReasonRequired: false,
-          activeReflectionPrompt: {
-            type: 'away_reflection',
-            minWords: 50,
-            triggeredAt: Date.now(),
-          },
+          activeReflectionPrompt: null,
+          lastEnforcementError: null,
         });
       },
 
+      markInterruptedRunning: () => {
+        const state = get();
+        if (!state.currentSessionId || state.pendingEnforcement) {
+          return;
+        }
+
+        const now = Date.now();
+        const { precisionTimer, pauseCount } = state;
+        const wasRunning = state.isRunning;
+        if (wasRunning && precisionTimer && typeof precisionTimer.pause === 'function') {
+          precisionTimer.pause();
+        }
+        const updateActiveFocusTime = get().updateActiveFocusTime;
+        if (wasRunning && updateActiveFocusTime) {
+          updateActiveFocusTime();
+        }
+        const hasExistingRun =
+          state.currentState === 'away_running' || state.currentState === 'interrupted_running';
+
+        set({
+          isRunning: false,
+          currentState: 'interrupted_running',
+          pauseStartTime: performance.now(),
+          pauseCount: wasRunning ? pauseCount + 1 : pauseCount,
+          lastAwayOrInterruptionAt: hasExistingRun
+            ? state.lastAwayOrInterruptionAt ?? now
+            : now,
+          interruptionStartTime: now,
+          resumeReasonRequired: false,
+          activeReflectionPrompt: null,
+          lastEnforcementError: null,
+          lastUserInteractionAt: now,
+        });
+
+        const sessionId = state.currentSessionId;
+        if (sessionId) {
+          enqueueTransition(async () => {
+            enqueueSessionEvent({
+              sessionId,
+              eventType: 'INTERRUPTED',
+              eventCategory: 'session',
+              sessionPhase: 'inactive',
+              metadata: {
+                reason: 'manual_interrupt',
+                from: state.currentState,
+                to: 'interrupted_running',
+                interruptionStartTime: now,
+              },
+            });
+          });
+        }
+      },
+
+      handleReturnFromAwayOrInterruption: (trigger) => {
+        const state = get();
+        if (!state.currentSessionId) {
+          return;
+        }
+
+        const wasAway = state.currentState === 'away_running';
+        const wasInterrupted = state.currentState === 'interrupted_running';
+        if (!wasAway && !wasInterrupted) {
+          return;
+        }
+
+        const now = Date.now();
+        const startedAt = state.lastAwayOrInterruptionAt ?? state.lastEventTime ?? now;
+        const durationSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+        console.log('RETURN HANDLER CALLED', {
+          lastAwayOrInterruptionAt: state.lastAwayOrInterruptionAt,
+          now,
+          duration: durationSeconds,
+          trigger,
+        });
+        console.log('DURATION:', durationSeconds);
+        const isLongInterrupted = wasInterrupted && durationSeconds >= 10 * 60;
+        const baseMinWords = isLongInterrupted
+          ? 50
+          : getMinimumWordsForDuration(durationSeconds);
+        const enforcementType: EnforcementType = wasAway ? 'AWAY' : 'INTERRUPTED';
+        const normalizedStats = normalizeDailyEnforcementStats(state.dailyEnforcementStats);
+        const relaxedMinWords = isLongInterrupted
+          ? 50
+          : applyEnforcementGrace(baseMinWords, normalizedStats.totalEnforcements);
+        const nextStats: DailyEnforcementStats = {
+          ...normalizedStats,
+          totalLostSeconds: normalizedStats.totalLostSeconds + durationSeconds,
+          totalEnforcements: relaxedMinWords > 0
+            ? normalizedStats.totalEnforcements + 1
+            : normalizedStats.totalEnforcements,
+        };
+        const lostMinutes = Math.round(nextStats.totalLostSeconds / 60);
+        const feedback = `You lost ${lostMinutes} minute${lostMinutes === 1 ? '' : 's'} today due to interruptions.`;
+
+        if (relaxedMinWords <= 0) {
+          set({
+            pendingEnforcement: null,
+            activeReflectionPrompt: null,
+            lastAwayOrInterruptionAt: null,
+            interruptionStartTime: null,
+            lastEnforcementError: null,
+            awayReflectionRequired: false,
+            dailyEnforcementStats: nextStats,
+            lastEnforcementFeedback: feedback,
+          });
+
+          const transitionState = get().transitionState;
+          if (transitionState) {
+            transitionState('paused', {
+              eventType: 'RETURN',
+              trigger,
+              from: enforcementType,
+              duration_seconds: durationSeconds,
+              enforcement_required: false,
+            });
+          }
+
+          get().resume();
+          return;
+        }
+
+        const pendingState: SessionState = wasAway
+          ? 'away_pending_explanation'
+          : 'interrupted_pending_reason';
+        const promptState: ReflectionPromptState = {
+          type: 'enforcement_reason',
+          source: enforcementType,
+          minWords: relaxedMinWords,
+          triggeredAt: now,
+          validationError: null,
+        };
+
+        set({
+          pendingEnforcement: {
+            type: enforcementType,
+            minWords: relaxedMinWords,
+            startedAt,
+            durationSeconds,
+          },
+          activeReflectionPrompt: promptState,
+          resumeReasonRequired: false,
+          awayReflectionRequired: false,
+          lastEnforcementError: null,
+          interruptionStartTime: null,
+          dailyEnforcementStats: nextStats,
+          lastEnforcementFeedback: feedback,
+        });
+
+        const transitionState = get().transitionState;
+        if (transitionState) {
+          transitionState(pendingState, {
+            eventType: 'RETURN',
+            trigger,
+            from: enforcementType,
+            duration_seconds: durationSeconds,
+            enforcement_required: true,
+            min_words: relaxedMinWords,
+            min_words_base: baseMinWords,
+          });
+        }
+      },
+
+      submitEnforcementExplanation: (reflection, typingTimeMs = 0) => {
+        const state = get();
+        const pending = state.pendingEnforcement;
+        if (!pending) {
+          return false;
+        }
+
+        const validation = validateExplanation(reflection, pending.minWords, typingTimeMs);
+        if (!validation.isValid) {
+          const errorMessage = validation.message || 'Please provide a better explanation before resuming.';
+          set({
+            lastEnforcementError: errorMessage,
+            activeReflectionPrompt: {
+              type: 'enforcement_reason',
+              source: pending.type,
+              minWords: pending.minWords,
+              triggeredAt: Date.now(),
+              validationError: errorMessage,
+            }
+          });
+          return false;
+        }
+
+        const normalizedStats = normalizeDailyEnforcementStats(state.dailyEnforcementStats);
+        const lostMinutes = Math.round(normalizedStats.totalLostSeconds / 60);
+        const warningSuffix = validation.warning ? ` ${validation.warning}` : '';
+        const feedback = `You lost ${lostMinutes} minute${lostMinutes === 1 ? '' : 's'} today due to interruptions.${warningSuffix}`;
+
+        set({
+          pendingEnforcement: null,
+          activeReflectionPrompt: null,
+          lastAwayOrInterruptionAt: null,
+          interruptionStartTime: null,
+          lastEnforcementError: null,
+          awayReflectionRequired: false,
+          resumeReasonRequired: false,
+          lastUserInteractionAt: Date.now(),
+          dailyEnforcementStats: normalizedStats,
+          lastEnforcementFeedback: feedback,
+        });
+
+        const {
+          precisionTimer,
+          pauseStartTime,
+          totalPauseTime,
+        } = state;
+
+        if (precisionTimer && typeof precisionTimer.start === 'function') {
+          precisionTimer.start();
+        }
+
+        let newTotalPauseTime = totalPauseTime;
+        if (pauseStartTime) {
+          const pauseDuration = (performance.now() - pauseStartTime) / 1000;
+          newTotalPauseTime += pauseDuration;
+        }
+
+        set({
+          isRunning: true,
+          sessionOwnerTabId: tabId,
+          isSessionLeader: true,
+          pauseStartTime: null,
+          totalPauseTime: newTotalPauseTime,
+          lastActiveTime: performance.now(),
+          resumeReasonRequired: false,
+          awayReflectionRequired: false,
+          activeReflectionPrompt: null,
+          pendingEnforcement: null,
+          lastAwayOrInterruptionAt: null,
+          lastEnforcementError: null,
+          lastUserInteractionAt: Date.now(),
+        });
+
+        const transitionState = get().transitionState;
+        if (transitionState) {
+          transitionState('focus', {
+            reason: reflection.trim(),
+            eventType: 'RESUME',
+            enforcement_completed: true,
+          });
+        }
+
+        const snapshot = createCrossTabSnapshot(get());
+        writeActiveSessionSnapshot(snapshot);
+        if (snapshot) {
+          emitCrossTabEvent({
+            type: 'SYNC_ACTIVE_SESSION',
+            snapshot,
+            sourceTabId: tabId
+          });
+        }
+        return true;
+      },
+
+      useQuickBreakShortcut: () => {
+        const state = get();
+        const pending = state.pendingEnforcement;
+        if (!pending) {
+          return false;
+        }
+
+        const normalizedStats = normalizeDailyEnforcementStats(state.dailyEnforcementStats);
+        if (normalizedStats.quickBreakUses >= QUICK_BREAK_LIMIT_PER_DAY) {
+          const message = `Quick break limit reached for today (${QUICK_BREAK_LIMIT_PER_DAY}/${QUICK_BREAK_LIMIT_PER_DAY}).`;
+          set({
+            lastEnforcementError: message,
+            activeReflectionPrompt: {
+              type: 'enforcement_reason',
+              source: pending.type,
+              minWords: pending.minWords,
+              triggeredAt: Date.now(),
+              validationError: message,
+            }
+          });
+          return false;
+        }
+
+        const nextStats: DailyEnforcementStats = {
+          ...normalizedStats,
+          quickBreakUses: normalizedStats.quickBreakUses + 1,
+        };
+        const lostMinutes = Math.round(nextStats.totalLostSeconds / 60);
+
+        set({
+          pendingEnforcement: null,
+          activeReflectionPrompt: null,
+          lastAwayOrInterruptionAt: null,
+          interruptionStartTime: null,
+          lastEnforcementError: null,
+          awayReflectionRequired: false,
+          resumeReasonRequired: false,
+          dailyEnforcementStats: nextStats,
+          lastEnforcementFeedback: `Quick break used (${nextStats.quickBreakUses}/${QUICK_BREAK_LIMIT_PER_DAY} today). You lost ${lostMinutes} minute${lostMinutes === 1 ? '' : 's'} today due to interruptions.`,
+          lastUserInteractionAt: Date.now(),
+        });
+
+        get().resume('quick_break_shortcut');
+        return true;
+      },
+
+      restorePendingEnforcement: () => {
+        const pending = get().pendingEnforcement;
+        const normalizedStats = normalizeDailyEnforcementStats(get().dailyEnforcementStats);
+        if (!pending) {
+          set({ dailyEnforcementStats: normalizedStats });
+          return;
+        }
+
+        const pendingState: SessionState = pending.type === 'AWAY'
+          ? 'away_pending_explanation'
+          : 'interrupted_pending_reason';
+        set({
+          isRunning: false,
+          resumeReasonRequired: false,
+          awayReflectionRequired: false,
+          currentState: pendingState,
+          dailyEnforcementStats: normalizedStats,
+          activeReflectionPrompt: {
+            type: 'enforcement_reason',
+            source: pending.type,
+            minWords: pending.minWords,
+            triggeredAt: Date.now(),
+            validationError: null,
+          }
+        });
+      },
+
+      triggerAwayReflection: () => {
+        get().markAwayRunning();
+      },
+
       submitAwayReflection: (reflection) => {
+        const pending = get().pendingEnforcement;
+        if (pending) {
+          get().submitEnforcementExplanation(reflection, pending.minWords * 300);
+          return;
+        }
+
         const trimmedReflection = reflection.trim();
         if (countWords(trimmedReflection) < 50) {
           set({
@@ -1332,7 +2053,7 @@ export const useTimerStore = create<TimerState>()(
           lastUserInteractionAt: Date.now(),
         });
 
-        get().resume();
+        get().resume(trimmedReflection);
       },
 
       submitReturnReflection: (reflection) => {
@@ -1370,6 +2091,13 @@ export const useTimerStore = create<TimerState>()(
 
       stop: (reason, details, wasEndedEarly = true) => {
         try {
+          const trimmedReason = reason?.trim();
+          const trimmedDetails = details?.trim();
+          if (wasEndedEarly && (!trimmedReason || !trimmedDetails)) {
+            console.warn('Stop blocked: interruption reason and details are required.');
+            return;
+          }
+
           const { 
             precisionTimer, 
             currentSessionId, 
@@ -1396,7 +2124,7 @@ export const useTimerStore = create<TimerState>()(
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState('idle', { completed: false, reason, details, wasEndedEarly, eventType: 'abandon' });
+            transitionState('idle', { completed: false, reason: trimmedReason, details: trimmedDetails, wasEndedEarly, eventType: 'abandon' });
           }
           const updatedEvents = get().sessionEvents;
 
@@ -1422,8 +2150,8 @@ export const useTimerStore = create<TimerState>()(
                 actualDuration,
                 activeFocusSeconds: Math.floor(activeFocusTime),
                 completed: false,
-                stopReason: reason,
-                stopReasonDetails: details,
+                stopReason: trimmedReason,
+                stopReasonDetails: trimmedDetails,
                 wasEndedEarly,
                 syllabusId: syllabusId,
                 pauseCount: pauseCount,
@@ -1439,17 +2167,17 @@ export const useTimerStore = create<TimerState>()(
               console.log('🎯 Session stopped:', updatedSession);
 
               // Save to database
-              const saveSessionToDatabase = get().saveSessionToDatabase;
               const updateFocusPatterns = get().updateFocusPatterns;
-              
-              if (saveSessionToDatabase) {
-                saveSessionToDatabase(updatedSession, updatedEvents);
-              }
+
+              addToQueue('save_session_analytics', {
+                session: serializeSessionForQueue(updatedSession),
+                events: updatedEvents,
+              } as SaveSessionOutboxPayload);
               if (updateFocusPatterns) {
                 updateFocusPatterns(updatedSession);
               }
 
-              if (reason && wasEndedEarly && updatedSession.type === 'focus') {
+              if (trimmedReason && wasEndedEarly && updatedSession.type === 'focus') {
                 shouldStartInterrupted = true;
                 interruptedTimeValue = actualDuration;
                 console.log('🎯 Will start interrupted timer from:', interruptedTimeValue);
@@ -1463,6 +2191,10 @@ export const useTimerStore = create<TimerState>()(
               
               saveSessionsToStorage(updatedSessions);
             }
+          }
+
+          if (currentSessionId) {
+            stopHeartbeatInterval(currentSessionId);
           }
 
           set({
@@ -1499,6 +2231,9 @@ export const useTimerStore = create<TimerState>()(
             reflectionRequired: false,
             reflectionType: null,
             reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
           });
 
           setSafeTitle('GRYND - Build Relentless Consistency');
@@ -1553,6 +2288,9 @@ export const useTimerStore = create<TimerState>()(
             reflectionRequired: false,
             reflectionType: null,
             reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
           };
           set(resetDefaults);
           setSafeTitle('GRYND - Build Relentless Consistency');
@@ -1586,6 +2324,7 @@ export const useTimerStore = create<TimerState>()(
           
           precisionTimer.start();
           attachPrecisionTimerHandlers(precisionTimer, subject, 'interrupted', set, get);
+          startHeartbeatInterval(sessionId, get);
 
           const deviceInfo = getDeviceInfo();
           const newSession: TimerSession = {
@@ -1645,6 +2384,9 @@ export const useTimerStore = create<TimerState>()(
             reflectionRequired: false,
             reflectionType: null,
             reflectionStartTime: null,
+            pendingEnforcement: null,
+            lastAwayOrInterruptionAt: null,
+            lastEnforcementError: null,
           });
 
           const transitionState = get().transitionState;
@@ -1652,9 +2394,17 @@ export const useTimerStore = create<TimerState>()(
             transitionState('interrupted', {
               sessionType: 'interrupted',
               subject,
+              subjectId: lastCompletedSession.subjectId || null,
+              topicId: lastCompletedSession.topicId || null,
               duration: maxDuration
             });
           }
+
+          const latestEvents = get().sessionEvents;
+          addToQueue('save_session_analytics', {
+            session: serializeSessionForQueue(newSession),
+            events: latestEvents,
+          } as SaveSessionOutboxPayload);
 
           console.log('🎯 Interrupted timer started:', newSession);
           saveSessionsToStorage(updatedSessions);
@@ -1682,6 +2432,10 @@ export const useTimerStore = create<TimerState>()(
             totalTime, 
             timeLeft, 
             sessionStartTime, 
+            sessionType,
+            subject,
+            subjectId,
+            topicId,
             isInterruptedMode, 
             interruptedTime, 
             elapsedOffsetSeconds,
@@ -1691,6 +2445,7 @@ export const useTimerStore = create<TimerState>()(
             totalPauseTime,
             interruptionCount,
           } = get();
+          let shouldStartBreak = false;
 
           // Final active focus time update
           const updateActiveFocusTime = get().updateActiveFocusTime;
@@ -1699,7 +2454,9 @@ export const useTimerStore = create<TimerState>()(
           }
 
           const transitionState = get().transitionState;
-          if (transitionState) {
+          if (transitionState && sessionType === 'break') {
+            transitionState('idle', { eventType: 'BREAK_END', completed: true });
+          } else if (transitionState) {
             transitionState('idle', { completed: true, reflection });
           }
           const updatedEvents = get().sessionEvents;
@@ -1749,13 +2506,13 @@ export const useTimerStore = create<TimerState>()(
               console.log('🎯 Session completed:', completedSession);
 
               // Save to database and update patterns
-              const saveSessionToDatabase = get().saveSessionToDatabase;
               const updateFocusPatterns = get().updateFocusPatterns;
               const generateBehavioralInsights = get().generateBehavioralInsights;
-              
-              if (saveSessionToDatabase) {
-                saveSessionToDatabase(completedSession, updatedEvents);
-              }
+
+              addToQueue('save_session_analytics', {
+                session: serializeSessionForQueue(completedSession),
+                events: updatedEvents,
+              } as SaveSessionOutboxPayload);
               if (updateFocusPatterns) {
                 updateFocusPatterns(completedSession);
               }
@@ -1766,12 +2523,17 @@ export const useTimerStore = create<TimerState>()(
               set({
                 sessions: updatedSessions,
                 lastCompletedSession: completedSession,
-                showBreakPrompt: takeBreak && !isInterruptedMode,
+                showBreakPrompt: false,
                 interruptedTime: 0,
               });
+              shouldStartBreak = sessionType === 'focus' && !isInterruptedMode && Boolean(takeBreak);
               
               saveSessionsToStorage(updatedSessions);
             }
+          }
+
+          if (currentSessionId) {
+            stopHeartbeatInterval(currentSessionId);
           }
 
           set({
@@ -1786,6 +2548,7 @@ export const useTimerStore = create<TimerState>()(
             syllabusId: null,
             startTime: null,
             precisionTimer: null,
+            breakStartTime: null,
             sessionStartTime: null,
             isInterruptedMode: false,
             elapsedOffsetSeconds: 0,
@@ -1817,6 +2580,11 @@ export const useTimerStore = create<TimerState>()(
             sessionId: currentSessionId,
             sourceTabId: tabId
           });
+
+          if (shouldStartBreak) {
+            get().startBreakTimer(5 * 60);
+            return;
+          }
         } catch (error) {
           console.error('Failed to complete timer:', error);
           const resetDefaults: Partial<TimerState> = {
@@ -1858,6 +2626,75 @@ export const useTimerStore = create<TimerState>()(
         }
       },
 
+      endBreak: (reason = 'manual_end') => {
+        const state = get();
+        if (!state.currentSessionId || state.sessionType !== 'break') {
+          return;
+        }
+
+        if (state.precisionTimer && typeof state.precisionTimer.stop === 'function') {
+          state.precisionTimer.stop();
+        }
+        stopHeartbeatInterval(state.currentSessionId);
+
+        const transitionState = get().transitionState;
+        if (transitionState) {
+          transitionState('idle', {
+            eventType: 'BREAK_END',
+            reason,
+            completed: true,
+          });
+        }
+
+        set({
+          currentSessionId: null,
+          timeLeft: 0,
+          totalTime: 0,
+          preciseTimeLeft: 0,
+          isRunning: false,
+          subject: '',
+          subjectId: null,
+          topicId: null,
+          syllabusId: null,
+          startTime: null,
+          precisionTimer: null,
+          breakStartTime: null,
+          sessionStartTime: null,
+          isInterruptedMode: false,
+          elapsedOffsetSeconds: 0,
+          sessionOwnerTabId: null,
+          isSessionLeader: true,
+          pauseStartTime: null,
+          totalPauseTime: 0,
+          pauseCount: 0,
+          lastActiveTime: 0,
+          activeFocusTime: 0,
+          sessionEvents: [],
+          resumeReasonRequired: false,
+          activeReflectionPrompt: null,
+          awayReflectionRequired: false,
+          lastUserInteractionAt: Date.now(),
+          currentState: 'idle' as SessionState,
+          lastEventTime: null,
+          reflectionRequired: false,
+          reflectionType: null,
+          reflectionStartTime: null,
+          pendingEnforcement: null,
+          lastAwayOrInterruptionAt: null,
+          interruptionStartTime: null,
+          lastEnforcementError: null,
+          showBreakPrompt: false,
+        });
+
+        setSafeTitle('GRYND - Build Relentless Consistency');
+        writeActiveSessionSnapshot(null);
+        emitCrossTabEvent({
+          type: 'CLEAR_ACTIVE_SESSION',
+          sessionId: state.currentSessionId,
+          sourceTabId: tabId
+        });
+      },
+
       startBreakTimer: (durationSeconds) => {
         try {
           if (!durationSeconds || typeof durationSeconds !== 'number' || durationSeconds <= 0) {
@@ -1866,8 +2703,7 @@ export const useTimerStore = create<TimerState>()(
           }
           
           const safeDuration = Math.max(60, Math.floor(durationSeconds));
-          
-          set({ showBreakPrompt: false });
+
           const startSessionMethod = get().startSession;
           if (startSessionMethod) {
             startSessionMethod('Break Time', safeDuration, 'break', undefined, undefined);
@@ -1875,7 +2711,6 @@ export const useTimerStore = create<TimerState>()(
           }
         } catch (error) {
           console.error('Failed to start break timer:', error);
-          set({ showBreakPrompt: false });
         }
       },
 
@@ -1913,6 +2748,8 @@ export const useTimerStore = create<TimerState>()(
         sessions: Array.isArray(state.sessions) ? state.sessions : [],
         lastCompletedSession: state.lastCompletedSession || null,
         interruptedTime: state.interruptedTime || 0,
+        pendingEnforcement: state.pendingEnforcement || null,
+        dailyEnforcementStats: state.dailyEnforcementStats,
       }),
       onRehydrateStorage: () => (state) => {
         try {
@@ -1959,6 +2796,11 @@ export const useTimerStore = create<TimerState>()(
               reflectionRequired: false,
               reflectionType: null,
               reflectionStartTime: null,
+              pendingEnforcement: state.pendingEnforcement || null,
+              lastAwayOrInterruptionAt: state.pendingEnforcement?.startedAt || null,
+              lastEnforcementError: null,
+              dailyEnforcementStats: normalizeDailyEnforcementStats(state.dailyEnforcementStats),
+              lastEnforcementFeedback: null,
             };
             
             Object.assign(state, resetFields);
@@ -1980,12 +2822,69 @@ export const useTimerStore = create<TimerState>()(
 );
 
 let crossTabSyncInitialized = false;
+let outboxHandlersRegistered = false;
+
+const registerOutboxHandlers = () => {
+  if (outboxHandlersRegistered) {
+    return;
+  }
+
+  outboxHandlersRegistered = true;
+  registerOutboxHandler('save_session_analytics', async (payload) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid outbox payload for session analytics');
+    }
+
+    const typedPayload = payload as SaveSessionOutboxPayload;
+    if (!typedPayload.session || typeof typedPayload.session !== 'object') {
+      throw new Error('Missing session payload');
+    }
+
+    const session = hydrateSessionFromQueue(typedPayload.session);
+    const events = Array.isArray(typedPayload.events)
+      ? typedPayload.events.filter(
+          (event): event is TimerEvent =>
+            Boolean(event) &&
+            typeof (event as TimerEvent).type === 'string' &&
+            typeof (event as TimerEvent).timestamp === 'number'
+        )
+      : [];
+
+    await useTimerStore.getState().saveSessionToDatabase(session, events);
+  });
+
+  registerOutboxHandler('log_session_event', async (payload) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid outbox payload for session event');
+    }
+
+    const typedPayload = payload as Partial<LogSessionEventOutboxPayload>;
+    if (!typedPayload.sessionId || !typedPayload.eventType) {
+      throw new Error('Missing session event payload fields');
+    }
+
+    const error = await logEvent({
+      sessionId: typedPayload.sessionId,
+      type: typedPayload.eventType,
+      eventCategory: typedPayload.eventCategory,
+      sessionPhase: typedPayload.sessionPhase,
+      metadata: (typedPayload.metadata || {}) as Record<string, unknown>,
+    });
+
+    if (error) {
+      throw error;
+    }
+  });
+};
 
 const applyRemoteSnapshot = (snapshot: CrossTabSessionSnapshot) => {
   const state = useTimerStore.getState();
   const existingTimer = state.precisionTimer;
   if (existingTimer && typeof existingTimer.stop === 'function') {
     existingTimer.stop();
+  }
+  if (state.currentSessionId) {
+    stopHeartbeatInterval(state.currentSessionId);
   }
 
   const remaining = Math.max(0, snapshot.duration - snapshot.currentSessionElapsedSeconds);
@@ -2041,6 +2940,11 @@ const applyRemoteSnapshot = (snapshot: CrossTabSessionSnapshot) => {
     reflectionRequired: false,
     reflectionType: null,
     reflectionStartTime: null,
+    pendingEnforcement: null,
+    lastAwayOrInterruptionAt: null,
+    lastEnforcementError: null,
+    dailyEnforcementStats: normalizeDailyEnforcementStats(state.dailyEnforcementStats),
+    lastEnforcementFeedback: null,
   });
 };
 
@@ -2048,6 +2952,9 @@ const clearRemoteSession = () => {
   const state = useTimerStore.getState();
   if (state.precisionTimer && typeof state.precisionTimer.stop === 'function') {
     state.precisionTimer.stop();
+  }
+  if (state.currentSessionId) {
+    stopHeartbeatInterval(state.currentSessionId);
   }
 
   useTimerStore.setState({
@@ -2081,6 +2988,11 @@ const clearRemoteSession = () => {
     reflectionRequired: false,
     reflectionType: null,
     reflectionStartTime: null,
+    pendingEnforcement: null,
+    lastAwayOrInterruptionAt: null,
+    lastEnforcementError: null,
+    dailyEnforcementStats: normalizeDailyEnforcementStats(state.dailyEnforcementStats),
+    lastEnforcementFeedback: null,
   });
 };
 
@@ -2101,6 +3013,8 @@ const handleCrossTabEvent = (event: CrossTabSyncEvent) => {
 
 if (typeof window !== 'undefined' && !crossTabSyncInitialized) {
   crossTabSyncInitialized = true;
+  registerOutboxHandlers();
+  startQueueProcessor();
 
   getSyncChannel()?.addEventListener('message', (messageEvent: MessageEvent<CrossTabSyncEvent>) => {
     handleCrossTabEvent(messageEvent.data);
@@ -2133,4 +3047,5 @@ if (typeof window !== 'undefined' && !crossTabSyncInitialized) {
     }
   }, 2000);
 }
+
 

@@ -1,13 +1,4 @@
-import { supabase } from '../supabaseClient';
-
-type SessionAnalyticsRow = {
-  start_time: string;
-  end_time: string | null;
-  actual_duration_seconds: number | null;
-  completion_status: 'completed' | 'interrupted' | 'abandoned' | null;
-  subject_id?: string | null;
-  subjects?: { name?: string | null } | { name?: string | null }[] | null;
-};
+import { fetchSessionEvents, aggregateSessionsFromEvents } from './sessionEventAnalytics';
 
 export interface SessionAnalyticsPoint {
   date: string;
@@ -51,35 +42,13 @@ const toLocalDateKey = (date: Date): string => {
   return `${year}-${month}-${day}`;
 };
 
-const getSubjectName = (subjects: SessionAnalyticsRow['subjects']): string => {
-  if (Array.isArray(subjects)) {
-    return subjects[0]?.name || 'Unknown';
-  }
-
-  return subjects?.name || 'Unknown';
-};
-
-const isCleanSession = (session: SessionAnalyticsRow): boolean => {
-  if (!session.start_time) return false;
-  if (!session.end_time) return false;
-  if (!session.completion_status) return false;
-  return (session.actual_duration_seconds || 0) > 0;
-};
-
 export async function getSessionAnalytics(userId: string, days = 7): Promise<SessionAnalyticsPoint[]> {
   try {
     const today = startOfLocalDay(new Date());
     const since = shiftLocalDays(today, -(days - 1));
 
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select('start_time, end_time, actual_duration_seconds, completion_status')
-      .eq('user_id', userId)
-      .gte('start_time', since.toISOString())
-      .order('start_time', { ascending: true });
-
-    if (error || !data) return [];
-
+    const rows = await fetchSessionEvents(userId, since.toISOString());
+    const sessions = aggregateSessionsFromEvents(rows);
     const byDay: Record<string, SessionAnalyticsPoint> = {};
 
     for (let offset = 0; offset < days; offset += 1) {
@@ -93,19 +62,15 @@ export async function getSessionAnalytics(userId: string, days = 7): Promise<Ses
       };
     }
 
-    (data as SessionAnalyticsRow[])
-      .filter(isCleanSession)
-      .forEach((session) => {
-        const key = toLocalDateKey(new Date(session.start_time));
-        if (!byDay[key]) return;
+    sessions.forEach((session) => {
+      const key = toLocalDateKey(new Date(session.startedAt));
+      if (!byDay[key]) return;
 
-        const minutes = Math.round((session.actual_duration_seconds || 0) / 60);
-        if (session.completion_status === 'completed') {
-          byDay[key].focusMinutes += minutes;
-        } else {
-          byDay[key].interruptedMinutes += minutes;
-        }
-      });
+      byDay[key].focusMinutes += Math.round(session.focusSeconds / 60);
+      if (session.completionStatus !== 'completed') {
+        byDay[key].interruptedMinutes += Math.round(session.inactiveSeconds / 60);
+      }
+    });
 
     return Object.values(byDay);
   } catch {
@@ -115,14 +80,31 @@ export async function getSessionAnalytics(userId: string, days = 7): Promise<Ses
 
 export async function getFocusPatterns(userId: string) {
   try {
-    const { data, error } = await supabase
-      .from('focus_patterns')
-      .select('*')
-      .eq('user_id', userId)
-      .order('hour_of_day', { ascending: true });
+    const rows = await fetchSessionEvents(userId);
+    const byHour = new Map<number, { focusSeconds: number; sessionIds: Set<string> }>();
 
-    if (error || !data) return [];
-    return data;
+    rows.forEach((row) => {
+      if ((row.session_phase || '').toLowerCase() !== 'active') {
+        return;
+      }
+
+      const hour = new Date(row.event_timestamp).getHours();
+      const duration = typeof row.duration_since_last_event_seconds === 'number'
+        ? Math.max(0, Math.floor(row.duration_since_last_event_seconds))
+        : 0;
+      const existing = byHour.get(hour) || { focusSeconds: 0, sessionIds: new Set<string>() };
+      existing.focusSeconds += duration;
+      existing.sessionIds.add(row.session_id);
+      byHour.set(hour, existing);
+    });
+
+    return Array.from(byHour.entries())
+      .map(([hour, value]) => ({
+        hour_of_day: hour,
+        peak_focus_score: Math.round(value.focusSeconds / Math.max(1, value.sessionIds.size)),
+        session_count: value.sessionIds.size,
+      }))
+      .sort((a, b) => a.hour_of_day - b.hour_of_day);
   } catch {
     return [];
   }
@@ -130,15 +112,22 @@ export async function getFocusPatterns(userId: string) {
 
 export async function getBehavioralInsights(userId: string) {
   try {
-    const { data, error } = await supabase
-      .from('behavioral_insights')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    if (error || !data) return [];
-    return data;
+    const rows = await fetchSessionEvents(userId);
+    const sessions = aggregateSessionsFromEvents(rows);
+    const completed = sessions.filter((session) => session.completionStatus === 'completed');
+    const completionRate = sessions.length > 0 ? Math.round((completed.length / sessions.length) * 100) : 0;
+    const totalFocusSeconds = sessions.reduce((sum, session) => sum + session.focusSeconds, 0);
+    return [
+      {
+        insight_type: 'event_first_summary',
+        insight_data: {
+          total_sessions: sessions.length,
+          completed_sessions: completed.length,
+          completion_rate: completionRate,
+          total_focus_seconds: totalFocusSeconds,
+        },
+      },
+    ];
   } catch {
     return [];
   }
@@ -146,38 +135,30 @@ export async function getBehavioralInsights(userId: string) {
 
 export async function getSubjectBreakdown(userId: string): Promise<SubjectBreakdownItem[]> {
   try {
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select('start_time, end_time, actual_duration_seconds, completion_status, subject_id, subjects(name)')
-      .eq('user_id', userId)
-      .not('subject_id', 'is', null);
-
-    if (error || !data) return [];
-
+    const rows = await fetchSessionEvents(userId);
+    const sessions = aggregateSessionsFromEvents(rows);
     const bySubject: Record<string, SubjectBreakdownItem> = {};
 
-    (data as SessionAnalyticsRow[])
-      .filter(isCleanSession)
-      .forEach((session) => {
-        const subject = getSubjectName(session.subjects);
-        if (!bySubject[subject]) {
-          bySubject[subject] = {
-            subject,
-            totalSeconds: 0,
-            totalMinutes: 0,
-            sessions: 0,
-            completedSessions: 0,
-            completionRate: 0,
-            percentage: 0,
-          };
-        }
+    sessions.forEach((session) => {
+      const subject = session.subjectLabel || 'Unknown';
+      if (!bySubject[subject]) {
+        bySubject[subject] = {
+          subject,
+          totalSeconds: 0,
+          totalMinutes: 0,
+          sessions: 0,
+          completedSessions: 0,
+          completionRate: 0,
+          percentage: 0,
+        };
+      }
 
-        bySubject[subject].totalSeconds += session.actual_duration_seconds || 0;
-        bySubject[subject].sessions += 1;
-        if (session.completion_status === 'completed') {
-          bySubject[subject].completedSessions += 1;
-        }
-      });
+      bySubject[subject].totalSeconds += session.focusSeconds;
+      bySubject[subject].sessions += 1;
+      if (session.completionStatus === 'completed') {
+        bySubject[subject].completedSessions += 1;
+      }
+    });
 
     const items = Object.values(bySubject);
     const totalSeconds = items.reduce((sum, item) => sum + item.totalSeconds, 0);
@@ -198,15 +179,25 @@ export async function getSubjectBreakdown(userId: string): Promise<SubjectBreakd
 
 export async function getPeakHours(userId: string) {
   try {
-    const { data, error } = await supabase
-      .from('focus_patterns')
-      .select('hour_of_day, peak_focus_score, session_count')
-      .eq('user_id', userId)
-      .order('peak_focus_score', { ascending: false })
-      .limit(3);
+    const rows = await fetchSessionEvents(userId);
+    const byHour = new Map<number, number>();
 
-    if (error || !data) return [];
-    return data;
+    rows.forEach((row) => {
+      if ((row.session_phase || '').toLowerCase() !== 'active') {
+        return;
+      }
+
+      const hour = new Date(row.event_timestamp).getHours();
+      const duration = typeof row.duration_since_last_event_seconds === 'number'
+        ? Math.max(0, Math.floor(row.duration_since_last_event_seconds))
+        : 0;
+      byHour.set(hour, (byHour.get(hour) || 0) + duration);
+    });
+
+    return Array.from(byHour.entries())
+      .map(([hour, focusTime]) => ({ hour_of_day: hour, peak_focus_score: focusTime, session_count: 1 }))
+      .sort((a, b) => b.peak_focus_score - a.peak_focus_score)
+      .slice(0, 3);
   } catch {
     return [];
   }
@@ -214,23 +205,14 @@ export async function getPeakHours(userId: string) {
 
 export async function getStreakData(userId: string): Promise<StreakData> {
   try {
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select('start_time, end_time, actual_duration_seconds, completion_status')
-      .eq('user_id', userId)
-      .eq('completion_status', 'completed')
-      .order('start_time', { ascending: false });
-
-    if (error || !data || data.length === 0) {
+    const rows = await fetchSessionEvents(userId);
+    const sessions = aggregateSessionsFromEvents(rows).filter((session) => session.completionStatus === 'completed');
+    if (sessions.length === 0) {
       return { currentStreak: 0, longestStreak: 0, totalStudyDays: 0 };
     }
 
     const studyDays = Array.from(
-      new Set(
-        (data as SessionAnalyticsRow[])
-          .filter(isCleanSession)
-          .map((session) => toLocalDateKey(new Date(session.start_time)))
-      )
+      new Set(sessions.map((session) => toLocalDateKey(new Date(session.endedAt || session.startedAt))))
     ).sort();
 
     if (studyDays.length === 0) {

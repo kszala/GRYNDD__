@@ -98,6 +98,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const initializeFromStorage = useTimerStore(state => state.initializeFromStorage);
   const recoverActiveSession = useTimerStore(state => state.recoverActiveSession);
+  const recoverUnfinishedSessionFromDatabase = useTimerStore(state => state.recoverUnfinishedSessionFromDatabase);
+  const restorePendingEnforcement = useTimerStore(state => state.restorePendingEnforcement);
 
   useActivityTracker();
 
@@ -108,6 +110,8 @@ function App() {
   useEffect(() => {
     initializeFromStorage();
     recoverActiveSession();
+    restorePendingEnforcement();
+    void recoverUnfinishedSessionFromDatabase();
     
     const checkSession = async () => {
       try {

@@ -379,15 +379,17 @@ export class SubjectService {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
-      // Get session analytics for the subject
-      const { data: sessions, error: sessionsError } = await supabase
-        .from('session_analytics')
-        .select('*')
+      // Get session events for the subject (event-first analytics)
+      const { data: sessionEvents, error: sessionEventsError } = await supabase
+        .from('session_events')
+        .select('session_id, event_type, duration_since_last_event_seconds, session_phase, event_timestamp, metadata')
         .eq('user_id', user.id)
-        .eq('subject_id', subjectId)
-        .gte('start_time', startDate.toISOString());
+        .gte('event_timestamp', startDate.toISOString())
+        .contains('metadata', { subjectId })
+        .order('event_timestamp', { ascending: true })
+        .order('event_sequence', { ascending: true });
 
-      if (sessionsError) throw sessionsError;
+      if (sessionEventsError) throw sessionEventsError;
 
       // Get topic progress for the subject
       const { data: progress, error: progressError } = await supabase
@@ -405,9 +407,46 @@ export class SubjectService {
 
       if (progressError) throw progressError;
 
-      const totalSessions = sessions?.length || 0;
-      const completedSessions = sessions?.filter(s => s.completion_status === 'completed').length || 0;
-      const totalFocusTime = sessions?.reduce((sum, s) => sum + (s.actual_duration_seconds || 0), 0) || 0;
+      const sessionMap = new Map<string, {
+        focusSeconds: number;
+        completionStatus: 'completed' | 'interrupted' | 'abandoned';
+      }>();
+
+      (sessionEvents || []).forEach((event: any) => {
+        if (!event?.session_id) {
+          return;
+        }
+
+        const current = sessionMap.get(event.session_id) || {
+          focusSeconds: 0,
+          completionStatus: 'abandoned' as const
+        };
+
+        const phase = String(event.session_phase || '').toLowerCase();
+        const duration = typeof event.duration_since_last_event_seconds === 'number'
+          ? Math.max(0, Math.floor(event.duration_since_last_event_seconds))
+          : 0;
+        const eventType = String(event.event_type || '').toLowerCase();
+
+        if (phase === 'active') {
+          current.focusSeconds += duration;
+        }
+
+        if (eventType === 'complete') {
+          current.completionStatus = 'completed';
+        } else if (eventType === 'interrupt') {
+          current.completionStatus = 'interrupted';
+        } else if (eventType === 'abandon' && current.completionStatus !== 'completed') {
+          current.completionStatus = 'abandoned';
+        }
+
+        sessionMap.set(event.session_id, current);
+      });
+
+      const sessions = Array.from(sessionMap.values());
+      const totalSessions = sessions.length;
+      const completedSessions = sessions.filter(s => s.completionStatus === 'completed').length;
+      const totalFocusTime = sessions.reduce((sum, s) => sum + s.focusSeconds, 0);
 
       return {
         totalSessions,

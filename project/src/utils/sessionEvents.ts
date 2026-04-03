@@ -34,6 +34,7 @@ export interface SessionStateSnapshot {
 
 export interface PersistedSessionEvent {
   event_id: string;
+  event_sequence?: number;
   session_id: string;
   user_id: string;
   event_type: SessionEventType;
@@ -164,7 +165,8 @@ export const insertSessionEvent = async (
 
     // Generate deterministic event_id for deduplication
     // Format: sessionId_eventType_timestamp (guarantees uniqueness)
-    const eventId = `${sessionId}_${event.event_type}_${event.timestamp}`;
+    const eventSequence = event.timestamp;
+    const eventId = `${sessionId}_${event.event_type}_${eventSequence}`;
 
     // Convert duration from milliseconds to seconds
     const durationSeconds = Math.round(event.duration_since_last_event / 1000);
@@ -172,6 +174,7 @@ export const insertSessionEvent = async (
     // Prepare event data for Supabase
     const eventData = {
       event_id: eventId,
+      event_sequence: eventSequence,
       session_id: sessionId,
       user_id: userId,
       event_type: event.event_type,
@@ -187,7 +190,10 @@ export const insertSessionEvent = async (
     // Insert into session_events table
     const { error } = await supabase
       .from('session_events')
-      .insert([eventData]);
+      .upsert([eventData], {
+        onConflict: 'event_id',
+        ignoreDuplicates: true,
+      });
 
     if (error) {
       // Retry once after 1s on failure
@@ -326,6 +332,7 @@ export const fetchSessionEventMetrics = async (
     .from('session_events')
     .select(`
       event_id,
+      event_sequence,
       session_id,
       user_id,
       event_type,
@@ -339,7 +346,8 @@ export const fetchSessionEventMetrics = async (
     `)
     .eq('session_id', sessionId)
     .eq('user_id', userId)
-    .order('event_timestamp', { ascending: true });
+    .order('event_timestamp', { ascending: true })
+    .order('event_sequence', { ascending: true });
 
   if (error) {
     console.error('Failed to load session events for analytics reconstruction:', error);

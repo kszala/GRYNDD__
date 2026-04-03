@@ -69,6 +69,32 @@ export const useGryndTubePlayer = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
+  const logPlaybackEvent = async (
+    type: 'play' | 'pause' | 'seek' | 'heartbeat' | 'end',
+    options?: { seekFromSeconds?: number; seekToSeconds?: number }
+  ) => {
+    if (!sessionIdRef.current || !video?.videoId) {
+      return;
+    }
+
+    const currentTimeSeconds = Math.max(0, Math.floor(currentTimeRef.current || 0));
+    await analyticsService.logPlaybackEvent(userId, {
+      sessionId: sessionIdRef.current,
+      type,
+      videoTimeSeconds: currentTimeSeconds,
+      videoId: video.videoId,
+      videoTitle: video.title,
+      channelName: video.channelTitle,
+      topicId,
+      totalDurationSeconds: video.durationSeconds,
+      watchedSeconds: watchedSecondsRef.current,
+      pauseCount: metricsRef.current.pauseCount,
+      seekCount: metricsRef.current.seekCount,
+      seekFromSeconds: options?.seekFromSeconds,
+      seekToSeconds: options?.seekToSeconds,
+    });
+  };
+
   const syncContinueWatching = async () => {
     if (!userId || !video?.videoId) {
       return;
@@ -92,17 +118,35 @@ export const useGryndTubePlayer = ({
     }
 
     sessionWatchedRef.current = 0;
-    sessionIdRef.current = await analyticsService.startPlaybackSession(userId, video.videoId);
+    sessionIdRef.current = await analyticsService.startPlaybackSession(userId, {
+      videoId: video.videoId,
+      videoTitle: video.title,
+      channelName: video.channelTitle,
+      totalDurationSeconds: video.durationSeconds,
+      topicId,
+      startTimeSeconds: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+    });
   };
 
   const endSession = async () => {
-    if (!sessionIdRef.current) {
+    if (!sessionIdRef.current || !video?.videoId) {
       return;
     }
 
     const sessionId = sessionIdRef.current;
     sessionIdRef.current = null;
-    await analyticsService.endPlaybackSession(sessionId, sessionWatchedRef.current);
+    await analyticsService.endPlaybackSession(userId, {
+      sessionId,
+      videoTimeSeconds: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+      videoId: video.videoId,
+      videoTitle: video.title,
+      channelName: video.channelTitle,
+      topicId,
+      totalDurationSeconds: video.durationSeconds,
+      watchedSeconds: watchedSecondsRef.current,
+      pauseCount: metricsRef.current.pauseCount,
+      seekCount: metricsRef.current.seekCount,
+    });
     await syncContinueWatching();
   };
 
@@ -116,6 +160,41 @@ export const useGryndTubePlayer = ({
     setIsPlaying(false);
     setPlayerError(null);
   }, [video?.videoId, video?.durationSeconds]);
+
+  useEffect(() => {
+    analyticsService.registerVideoOutboxHandlers();
+  }, []);
+
+  useEffect(() => {
+    const recoverActiveVideoSession = async () => {
+      if (!userId || !video?.videoId) {
+        return;
+      }
+
+      try {
+        const activeSession = await analyticsService.getActivePlaybackSession(userId, video.videoId);
+        if (!activeSession) {
+          return;
+        }
+
+        sessionIdRef.current = activeSession.id;
+        const recoveredWatch = Math.max(0, Math.floor(activeSession.watched_seconds || 0));
+        watchedSecondsRef.current = recoveredWatch;
+        sessionWatchedRef.current = recoveredWatch;
+        metricsRef.current = {
+          watchedSeconds: recoveredWatch,
+          pauseCount: Math.max(0, activeSession.pause_count || 0),
+          seekCount: Math.max(0, activeSession.seek_count || 0),
+          totalDurationSeconds: Math.max(1, activeSession.total_duration_seconds || video.durationSeconds),
+        };
+        setMetrics({ ...metricsRef.current });
+      } catch (error) {
+        console.error('Failed to recover video session:', error);
+      }
+    };
+
+    void recoverActiveVideoSession();
+  }, [userId, video?.videoId, video?.durationSeconds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,7 +235,11 @@ export const useGryndTubePlayer = ({
               if (event.data === YTApi.PlayerState.PLAYING) {
                 setIsPlaying(true);
 
+                const hadSession = Boolean(sessionIdRef.current);
                 await startSession();
+                if (hadSession) {
+                  await logPlaybackEvent('play');
+                }
 
                 return;
               }
@@ -168,7 +251,7 @@ export const useGryndTubePlayer = ({
                   pauseCount: metricsRef.current.pauseCount + 1,
                 };
                 setMetrics(metricsRef.current);
-                await endSession();
+                await logPlaybackEvent('pause');
                 return;
               }
 
@@ -251,10 +334,16 @@ export const useGryndTubePlayer = ({
             watchedSeconds: nextWatched,
           };
         } else if (Math.abs(delta) > 2.5) {
+          const seekFromSeconds = previousTime;
+          const seekToSeconds = nextTime;
           metricsRef.current = {
             ...metricsRef.current,
             seekCount: metricsRef.current.seekCount + 1,
           };
+          void logPlaybackEvent('seek', {
+            seekFromSeconds,
+            seekToSeconds,
+          });
         }
 
         setMetrics({ ...metricsRef.current });
@@ -263,6 +352,7 @@ export const useGryndTubePlayer = ({
       const now = Date.now();
       if (now - lastHeartbeatRef.current >= HEARTBEAT_MS) {
         lastHeartbeatRef.current = now;
+        void logPlaybackEvent('heartbeat');
         void syncContinueWatching();
       }
     }, WATCH_POLL_MS);

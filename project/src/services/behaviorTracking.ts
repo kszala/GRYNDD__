@@ -1,4 +1,4 @@
-import supabase from '../supabaseClient';
+import { fetchSessionEvents, aggregateSessionsFromEvents } from './sessionEventAnalytics';
 
 interface PeakFocusWindow {
   peakHour: number;
@@ -40,28 +40,14 @@ interface DailyBehaviorSummary {
   bestSubjectToday: string;
 }
 
-const isCleanAnalyticsSession = (session: {
-  start_time?: string | null;
-  end_time?: string | null;
-  actual_duration_seconds?: number | null;
-  completion_status?: string | null;
-}) => {
-  return Boolean(
-    session?.start_time &&
-    session?.end_time &&
-    session?.completion_status &&
-    (session?.actual_duration_seconds || 0) > 0
-  );
-};
-
-function formatHour(hour: number): string {
+const formatHour = (hour: number): string => {
   const hourNum = hour % 24;
   const suffix = hourNum >= 12 ? 'PM' : 'AM';
   const displayHour = hourNum === 0 ? 12 : hourNum > 12 ? hourNum - 12 : hourNum;
   return `${displayHour}:00 ${suffix}`;
-}
+};
 
-function getMinutesUntilHour(targetHour: number): number {
+const getMinutesUntilHour = (targetHour: number): number => {
   const now = new Date();
   const currentHour = now.getHours();
   const currentMinutes = now.getMinutes();
@@ -72,16 +58,26 @@ function getMinutesUntilHour(targetHour: number): number {
   }
 
   return hourDiff * 60 - currentMinutes;
-}
+};
+
+const toDateKey = (value: Date) => {
+  const y = value.getFullYear();
+  const m = `${value.getMonth() + 1}`.padStart(2, '0');
+  const d = `${value.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const focusScore = (focusSeconds: number, inactiveSeconds: number) => {
+  const total = focusSeconds + inactiveSeconds;
+  if (total <= 0) return 0;
+  return Number((focusSeconds / total).toFixed(2));
+};
 
 export async function getPeakFocusWindow(userId: string): Promise<PeakFocusWindow> {
   try {
-    const { data, error } = await supabase
-      .from('focus_patterns')
-      .select('hour_of_day, peak_focus_score, session_count')
-      .eq('user_id', userId);
-
-    if (error || !data || data.length === 0) {
+    const rows = await fetchSessionEvents(userId);
+    const sessions = aggregateSessionsFromEvents(rows);
+    if (!sessions.length) {
       return {
         peakHour: 9,
         peakHourLabel: '9:00 AM',
@@ -91,41 +87,34 @@ export async function getPeakFocusWindow(userId: string): Promise<PeakFocusWindo
       };
     }
 
-    const hourlyStats: { [key: number]: { totalScore: number; count: number; sessionCount: number } } = {};
-
-    data.forEach((pattern: any) => {
-      const hour = pattern.hour_of_day;
-      if (!hourlyStats[hour]) {
-        hourlyStats[hour] = { totalScore: 0, count: 0, sessionCount: 0 };
-      }
-      hourlyStats[hour].totalScore += pattern.peak_focus_score || 0;
-      hourlyStats[hour].count += 1;
-      hourlyStats[hour].sessionCount += pattern.session_count || 0;
+    const hourlyStats = new Map<number, { totalScore: number; count: number }>();
+    sessions.forEach((session) => {
+      const hour = new Date(session.startedAt).getHours();
+      const score = focusScore(session.focusSeconds, session.inactiveSeconds);
+      const existing = hourlyStats.get(hour) || { totalScore: 0, count: 0 };
+      existing.totalScore += score;
+      existing.count += 1;
+      hourlyStats.set(hour, existing);
     });
 
     let peakHour = 9;
     let maxAvgScore = 0;
-    let totalSessions = 0;
-
-    Object.entries(hourlyStats).forEach(([hour, stats]) => {
-      const avgScore = stats.count > 0 ? stats.totalScore / stats.count : 0;
-      totalSessions += stats.sessionCount;
-      if (avgScore > maxAvgScore) {
-        maxAvgScore = avgScore;
-        peakHour = parseInt(hour, 10);
+    hourlyStats.forEach((stats, hour) => {
+      const avg = stats.totalScore / Math.max(1, stats.count);
+      if (avg > maxAvgScore) {
+        maxAvgScore = avg;
+        peakHour = hour;
       }
     });
 
-    const avgFocusScore = maxAvgScore;
-    let confidence: 'high' | 'medium' | 'low' = 'low';
-    if (totalSessions > 15) confidence = 'high';
-    else if (totalSessions >= 5) confidence = 'medium';
+    const confidence: PeakFocusWindow['confidence'] =
+      sessions.length > 15 ? 'high' : sessions.length >= 5 ? 'medium' : 'low';
 
     return {
       peakHour,
       peakHourLabel: formatHour(peakHour),
       minutesUntilPeak: getMinutesUntilHour(peakHour),
-      avgFocusScore: Math.round(avgFocusScore * 100) / 100,
+      avgFocusScore: Number(maxAvgScore.toFixed(2)),
       confidence,
     };
   } catch {
@@ -141,129 +130,77 @@ export async function getPeakFocusWindow(userId: string): Promise<PeakFocusWindo
 
 export async function getAverageSessionLength(userId: string): Promise<SessionLengthMetrics> {
   try {
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select('start_time, end_time, actual_duration_seconds, completion_status')
-      .eq('user_id', userId);
-
-    if (error || !data || data.length === 0) {
-      return {
-        avgMinutes: 0,
-        avgBeforeQuit: 0,
-        longestSession: 0,
-        shortestSession: 0,
-      };
+    const sessions = aggregateSessionsFromEvents(await fetchSessionEvents(userId));
+    if (!sessions.length) {
+      return { avgMinutes: 0, avgBeforeQuit: 0, longestSession: 0, shortestSession: 0 };
     }
 
-    const completed: number[] = [];
-    const incomplete: number[] = [];
-    let longest = 0;
-    let shortest = Infinity;
+    const completedMinutes = sessions
+      .filter((session) => session.completionStatus === 'completed')
+      .map((session) => session.focusSeconds / 60);
+    const incompleteMinutes = sessions
+      .filter((session) => session.completionStatus !== 'completed')
+      .map((session) => session.focusSeconds / 60);
+    const allMinutes = sessions.map((session) => session.focusSeconds / 60).filter((minutes) => minutes > 0);
 
-    data.filter(isCleanAnalyticsSession).forEach((session: any) => {
-      const durationSeconds = session.actual_duration_seconds || 0;
-      const durationMinutes = durationSeconds / 60;
-
-      if (session.completion_status === 'completed') {
-        completed.push(durationMinutes);
-      } else if (session.completion_status === 'interrupted') {
-        incomplete.push(durationMinutes);
-      }
-
-      longest = Math.max(longest, durationMinutes);
-      if (durationSeconds > 60) {
-        shortest = Math.min(shortest, durationMinutes);
-      }
-    });
-
-    const avgMinutes = completed.length > 0 ? completed.reduce((a, b) => a + b, 0) / completed.length : 0;
-    const avgBeforeQuit = incomplete.length > 0 ? incomplete.reduce((a, b) => a + b, 0) / incomplete.length : 0;
+    const avgMinutes = completedMinutes.length
+      ? completedMinutes.reduce((sum, value) => sum + value, 0) / completedMinutes.length
+      : 0;
+    const avgBeforeQuit = incompleteMinutes.length
+      ? incompleteMinutes.reduce((sum, value) => sum + value, 0) / incompleteMinutes.length
+      : 0;
+    const longestSession = allMinutes.length ? Math.max(...allMinutes) : 0;
+    const shortestSession = allMinutes.length ? Math.min(...allMinutes) : 0;
 
     return {
-      avgMinutes: Math.round(avgMinutes * 100) / 100,
-      avgBeforeQuit: Math.round(avgBeforeQuit * 100) / 100,
-      longestSession: Math.round(longest * 100) / 100,
-      shortestSession: shortest === Infinity ? 0 : Math.round(shortest * 100) / 100,
+      avgMinutes: Number(avgMinutes.toFixed(2)),
+      avgBeforeQuit: Number(avgBeforeQuit.toFixed(2)),
+      longestSession: Number(longestSession.toFixed(2)),
+      shortestSession: Number(shortestSession.toFixed(2)),
     };
   } catch {
-    return {
-      avgMinutes: 0,
-      avgBeforeQuit: 0,
-      longestSession: 0,
-      shortestSession: 0,
-    };
+    return { avgMinutes: 0, avgBeforeQuit: 0, longestSession: 0, shortestSession: 0 };
   }
 }
 
 export async function getSubjectAbandonmentRate(userId: string): Promise<SubjectAbandonment[]> {
   try {
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select(
-        `
-        start_time,
-        end_time,
-        subject_id,
-        completion_status,
-        actual_duration_seconds,
-        subjects (
-          name
-        )
-      `
-      )
-      .eq('user_id', userId);
+    const sessions = aggregateSessionsFromEvents(await fetchSessionEvents(userId));
+    const stats = new Map<string, {
+      totalSessions: number;
+      abandonedSessions: number;
+      abandonDurations: number[];
+    }>();
 
-    if (error || !data || data.length === 0) {
-      return [];
-    }
+    sessions.forEach((session) => {
+      const key = session.subjectLabel || 'Unknown';
+      const current = stats.get(key) || { totalSessions: 0, abandonedSessions: 0, abandonDurations: [] };
+      current.totalSessions += 1;
 
-    const subjectStats: {
-      [key: string]: {
-        name: string;
-        totalSessions: number;
-        abandonedSessions: number;
-        abandonDurations: number[];
-      };
-    } = {};
-
-    data.filter(isCleanAnalyticsSession).forEach((session: any) => {
-      const subjectName = session.subjects?.name || 'Unknown';
-      const subjectId = session.subject_id;
-
-      if (!subjectStats[subjectId]) {
-        subjectStats[subjectId] = {
-          name: subjectName,
-          totalSessions: 0,
-          abandonedSessions: 0,
-          abandonDurations: [],
-        };
+      if (session.completionStatus !== 'completed') {
+        current.abandonedSessions += 1;
+        current.abandonDurations.push(session.focusSeconds);
       }
 
-      subjectStats[subjectId].totalSessions += 1;
-
-      if (session.completion_status === 'interrupted' || session.completion_status === 'abandoned') {
-        subjectStats[subjectId].abandonedSessions += 1;
-        subjectStats[subjectId].abandonDurations.push(session.actual_duration_seconds || 0);
-      }
+      stats.set(key, current);
     });
 
-    const result: SubjectAbandonment[] = Object.values(subjectStats).map((stat) => {
-      const abandonmentRate = (stat.abandonedSessions / stat.totalSessions) * 100;
-      const avgTimeBeforeAbandon =
-        stat.abandonDurations.length > 0
-          ? stat.abandonDurations.reduce((a, b) => a + b, 0) / stat.abandonDurations.length
+    return Array.from(stats.entries())
+      .map(([subjectName, stat]) => {
+        const abandonmentRate = stat.totalSessions > 0 ? (stat.abandonedSessions / stat.totalSessions) * 100 : 0;
+        const avgTimeBeforeAbandon = stat.abandonDurations.length
+          ? stat.abandonDurations.reduce((sum, value) => sum + value, 0) / stat.abandonDurations.length
           : 0;
 
-      return {
-        subjectName: stat.name,
-        totalSessions: stat.totalSessions,
-        abandonedSessions: stat.abandonedSessions,
-        abandonmentRate: Math.round(abandonmentRate * 100) / 100,
-        avgTimeBeforeAbandon: Math.round((avgTimeBeforeAbandon / 60) * 100) / 100,
-      };
-    });
-
-    return result.sort((a, b) => b.abandonmentRate - a.abandonmentRate);
+        return {
+          subjectName,
+          totalSessions: stat.totalSessions,
+          abandonedSessions: stat.abandonedSessions,
+          abandonmentRate: Number(abandonmentRate.toFixed(2)),
+          avgTimeBeforeAbandon: Number((avgTimeBeforeAbandon / 60).toFixed(2)),
+        };
+      })
+      .sort((a, b) => b.abandonmentRate - a.abandonmentRate);
   } catch {
     return [];
   }
@@ -271,25 +208,8 @@ export async function getSubjectAbandonmentRate(userId: string): Promise<Subject
 
 export async function getPausePatterns(userId: string): Promise<PausePatterns> {
   try {
-    const { data, error } = await supabase
-      .from('session_analytics')
-      .select(
-        `
-        end_time,
-        pause_count,
-        total_pause_duration_seconds,
-        start_time,
-        subject_id,
-        subjects (
-          name
-        ),
-        created_at
-      `
-      )
-      .eq('user_id', userId)
-      .gt('pause_count', 0);
-
-    if (error || !data || data.length === 0) {
+    const sessions = aggregateSessionsFromEvents(await fetchSessionEvents(userId));
+    if (!sessions.length) {
       return {
         avgPausesPerSession: 0,
         avgPauseDurationSeconds: 0,
@@ -299,87 +219,47 @@ export async function getPausePatterns(userId: string): Promise<PausePatterns> {
       };
     }
 
-    const cleanData = data.filter(isCleanAnalyticsSession);
-    if (cleanData.length === 0) {
-      return {
-        avgPausesPerSession: 0,
-        avgPauseDurationSeconds: 0,
-        mostPausedHour: 9,
-        mostPausedSubject: 'Unknown',
-        pauseTrend: 'stable',
-      };
-    }
+    const avgPausesPerSession = sessions.reduce((sum, session) => sum + session.pauseCount, 0) / sessions.length;
+    const avgPauseDurationSeconds = sessions.reduce((sum, session) => sum + session.inactiveSeconds, 0) / sessions.length;
 
-    const pauseCounts = cleanData.map((s: any) => s.pause_count || 0);
-    const avgPausesPerSession = pauseCounts.reduce((a, b) => a + b, 0) / pauseCounts.length;
-
-    const pauseDurations = cleanData
-      .filter((s: any) => s.pause_count > 0)
-      .map((s: any) => (s.total_pause_duration_seconds || 0) / (s.pause_count || 1));
-    const avgPauseDurationSeconds =
-      pauseDurations.length > 0 ? pauseDurations.reduce((a, b) => a + b, 0) / pauseDurations.length : 0;
-
-    const hourlyPauseStats: { [key: number]: number[] } = {};
-    cleanData.forEach((session: any) => {
-      const hour = new Date(session.start_time).getHours();
-      if (!hourlyPauseStats[hour]) {
-        hourlyPauseStats[hour] = [];
-      }
-      hourlyPauseStats[hour].push(session.pause_count || 0);
+    const byHour = new Map<number, number>();
+    const bySubject = new Map<string, number>();
+    sessions.forEach((session) => {
+      const hour = new Date(session.startedAt).getHours();
+      byHour.set(hour, (byHour.get(hour) || 0) + session.pauseCount);
+      bySubject.set(session.subjectLabel, (bySubject.get(session.subjectLabel) || 0) + session.pauseCount);
     });
 
-    let mostPausedHour = 9;
-    let maxAvgPauseCount = 0;
-    Object.entries(hourlyPauseStats).forEach(([hour, counts]) => {
-      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
-      if (avg > maxAvgPauseCount) {
-        maxAvgPauseCount = avg;
-        mostPausedHour = parseInt(hour, 10);
-      }
-    });
-
-    const subjectPauseStats: { [key: string]: number[] } = {};
-    cleanData.forEach((session: any) => {
-      const subjectName = session.subjects?.name || 'Unknown';
-      if (!subjectPauseStats[subjectName]) {
-        subjectPauseStats[subjectName] = [];
-      }
-      subjectPauseStats[subjectName].push(session.pause_count || 0);
-    });
-
-    let mostPausedSubject = 'Unknown';
-    let maxSubjectAvgPauses = 0;
-    Object.entries(subjectPauseStats).forEach(([subject, counts]) => {
-      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
-      if (avg > maxSubjectAvgPauses) {
-        maxSubjectAvgPauses = avg;
-        mostPausedSubject = subject;
-      }
-    });
+    const mostPausedHour = Array.from(byHour.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 9;
+    const mostPausedSubject = Array.from(bySubject.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown';
 
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
 
-    const lastSevenDays = cleanData.filter((s: any) => new Date(s.created_at) >= sevenDaysAgo);
-    const priorSevenDays = cleanData.filter((s: any) => new Date(s.created_at) >= fourteenDaysAgo && new Date(s.created_at) < sevenDaysAgo);
+    const lastSeven = sessions.filter((session) => new Date(session.startedAt) >= sevenDaysAgo);
+    const priorSeven = sessions.filter((session) => {
+      const startedAt = new Date(session.startedAt);
+      return startedAt >= fourteenDaysAgo && startedAt < sevenDaysAgo;
+    });
 
-    const lastSevenAvg = lastSevenDays.length > 0 ? lastSevenDays.reduce((sum, s: any) => sum + (s.pause_count || 0), 0) / lastSevenDays.length : 0;
-    const priorSevenAvg = priorSevenDays.length > 0 ? priorSevenDays.reduce((sum, s: any) => sum + (s.pause_count || 0), 0) / priorSevenDays.length : 0;
+    const lastSevenAvg = lastSeven.length
+      ? lastSeven.reduce((sum, session) => sum + session.pauseCount, 0) / lastSeven.length
+      : 0;
+    const priorSevenAvg = priorSeven.length
+      ? priorSeven.reduce((sum, session) => sum + session.pauseCount, 0) / priorSeven.length
+      : 0;
 
-    let pauseTrend: 'improving' | 'worsening' | 'stable' = 'stable';
+    let pauseTrend: PausePatterns['pauseTrend'] = 'stable';
     if (priorSevenAvg > 0) {
-      const percentChange = ((lastSevenAvg - priorSevenAvg) / priorSevenAvg) * 100;
-      if (percentChange > 10) {
-        pauseTrend = 'worsening';
-      } else if (percentChange < -10) {
-        pauseTrend = 'improving';
-      }
+      const change = ((lastSevenAvg - priorSevenAvg) / priorSevenAvg) * 100;
+      if (change > 10) pauseTrend = 'worsening';
+      else if (change < -10) pauseTrend = 'improving';
     }
 
     return {
-      avgPausesPerSession: Math.round(avgPausesPerSession * 100) / 100,
-      avgPauseDurationSeconds: Math.round(avgPauseDurationSeconds * 100) / 100,
+      avgPausesPerSession: Number(avgPausesPerSession.toFixed(2)),
+      avgPauseDurationSeconds: Number(avgPauseDurationSeconds.toFixed(2)),
       mostPausedHour,
       mostPausedSubject,
       pauseTrend,
@@ -397,91 +277,43 @@ export async function getPausePatterns(userId: string): Promise<PausePatterns> {
 
 export async function getDailyBehaviorSummary(userId: string): Promise<DailyBehaviorSummary> {
   try {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayEnd = todayStart;
+    const sessions = aggregateSessionsFromEvents(await fetchSessionEvents(userId));
+    const today = new Date();
+    const todayKey = toDateKey(today);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = toDateKey(yesterday);
 
-    const { data: todayData, error: todayError } = await supabase
-      .from('session_analytics')
-      .select(
-        `
-        start_time,
-        end_time,
-        actual_duration_seconds,
-        completion_status,
-        productivity_score,
-        subject_id,
-        subjects (
-          name
-        )
-      `
-      )
-      .eq('user_id', userId)
-      .gte('start_time', todayStart.toISOString());
+    const todaySessions = sessions.filter((session) => toDateKey(new Date(session.startedAt)) === todayKey);
+    const yesterdaySessions = sessions.filter((session) => toDateKey(new Date(session.startedAt)) === yesterdayKey);
 
-    const { data: yesterdayData, error: yesterdayError } = await supabase
-      .from('session_analytics')
-      .select('start_time, end_time, actual_duration_seconds, completion_status')
-      .eq('user_id', userId)
-      .gte('start_time', yesterdayStart.toISOString())
-      .lt('start_time', yesterdayEnd.toISOString());
+    const todayFocusSeconds = todaySessions.reduce((sum, session) => sum + session.focusSeconds, 0);
+    const completedToday = todaySessions.filter((session) => session.completionStatus === 'completed').length;
+    const todaySessionCount = todaySessions.length;
+    const todayCompletionRate = todaySessionCount ? (completedToday / todaySessionCount) * 100 : 0;
+    const todayAvgProductivity = todaySessionCount
+      ? todaySessions.reduce((sum, session) => sum + focusScore(session.focusSeconds, session.inactiveSeconds), 0) / todaySessionCount
+      : 0;
 
-    if (todayError || !todayData) {
-      return {
-        todayFocusSeconds: 0,
-        todaySessionCount: 0,
-        todayCompletionRate: 0,
-        todayAvgProductivity: 0,
-        comparedToYesterday: 'same',
-        bestSubjectToday: 'N/A',
-      };
-    }
-
-    const cleanTodayData = todayData.filter(isCleanAnalyticsSession);
-    const cleanYesterdayData = (yesterdayData || []).filter(isCleanAnalyticsSession);
-
-    const todayFocusSeconds = cleanTodayData.reduce((sum, session: any) => sum + (session.actual_duration_seconds || 0), 0);
-    const todaySessionCount = cleanTodayData.length;
-    const completedSessions = cleanTodayData.filter((s: any) => s.completion_status === 'completed').length;
-    const todayCompletionRate = todaySessionCount > 0 ? (completedSessions / todaySessionCount) * 100 : 0;
-
-    const productivityScores = cleanTodayData.filter((s: any) => s.productivity_score !== null && s.productivity_score !== undefined).map((s: any) => s.productivity_score);
-    const todayAvgProductivity = productivityScores.length > 0 ? productivityScores.reduce((a, b) => a + b, 0) / productivityScores.length : 0;
-
-    const subjectDurations: { [key: string]: number } = {};
-    cleanTodayData.forEach((session: any) => {
-      const subjectName = session.subjects?.name || 'Unknown';
-      subjectDurations[subjectName] = (subjectDurations[subjectName] || 0) + (session.actual_duration_seconds || 0);
+    const subjectDurations = new Map<string, number>();
+    todaySessions.forEach((session) => {
+      subjectDurations.set(session.subjectLabel, (subjectDurations.get(session.subjectLabel) || 0) + session.focusSeconds);
     });
+    const bestSubjectToday = Array.from(subjectDurations.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
 
-    let bestSubjectToday = 'N/A';
-    let maxDuration = 0;
-    Object.entries(subjectDurations).forEach(([subject, duration]) => {
-      if (duration > maxDuration) {
-        maxDuration = duration;
-        bestSubjectToday = subject;
-      }
-    });
-
-    let comparedToYesterday: 'better' | 'worse' | 'same' = 'same';
-    if (cleanYesterdayData.length > 0) {
-      const yesterdayFocusSeconds = cleanYesterdayData.reduce((sum, session: any) => sum + (session.actual_duration_seconds || 0), 0);
-      if (yesterdayFocusSeconds > 0) {
-        const percentChange = ((todayFocusSeconds - yesterdayFocusSeconds) / yesterdayFocusSeconds) * 100;
-        if (percentChange > 10) {
-          comparedToYesterday = 'better';
-        } else if (percentChange < -10) {
-          comparedToYesterday = 'worse';
-        }
-      }
+    const yesterdayFocusSeconds = yesterdaySessions.reduce((sum, session) => sum + session.focusSeconds, 0);
+    let comparedToYesterday: DailyBehaviorSummary['comparedToYesterday'] = 'same';
+    if (yesterdayFocusSeconds > 0) {
+      const percentChange = ((todayFocusSeconds - yesterdayFocusSeconds) / yesterdayFocusSeconds) * 100;
+      if (percentChange > 10) comparedToYesterday = 'better';
+      else if (percentChange < -10) comparedToYesterday = 'worse';
     }
 
     return {
       todayFocusSeconds,
       todaySessionCount,
-      todayCompletionRate: Math.round(todayCompletionRate * 100) / 100,
-      todayAvgProductivity: Math.round(todayAvgProductivity * 100) / 100,
+      todayCompletionRate: Number(todayCompletionRate.toFixed(2)),
+      todayAvgProductivity: Number(todayAvgProductivity.toFixed(2)),
       comparedToYesterday,
       bestSubjectToday,
     };

@@ -25,25 +25,65 @@ export const useAnalytics = () => {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [peakHours, setPeakHours] = useState<PeakHour[]>([]);
   const [distraction, setDistraction] = useState<DistractionProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const load = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const uid = userData?.user?.id;
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        const uid = userData?.user?.id;
 
-      if (!uid) return;
+        if (!uid) {
+          setMetrics({
+            focus_time: 0,
+            distraction_time: 0,
+            reflection_time: 0,
+            total_time: 0,
+            interruptions: 0,
+            sessions_completed: 0,
+          });
+          setPeakHours([]);
+          setDistraction({ idle_count: 0, away_count: 0, interrupt_count: 0 });
+          return;
+        }
 
-      const { data: metricsData } = await supabase.rpc("get_session_metrics", { uid });
-      const { data: peakData } = await supabase.rpc("get_peak_hours", { uid });
-      const { data: distractionData } = await supabase.rpc("get_distraction_profile", { uid });
+        const { data: metricsData } = await supabase.rpc('get_session_metrics', { uid });
+        const { data: peakData } = await supabase.rpc('get_peak_hours', { uid });
+        const { data: distractionData } = await supabase.rpc('get_distraction_profile', { uid });
 
-      setMetrics(metricsData as Metrics);
-      setPeakHours((peakData as PeakHour[]) || []);
-      setDistraction(distractionData as DistractionProfile);
+        setMetrics((metricsData as Metrics) ?? {
+          focus_time: 0,
+          distraction_time: 0,
+          reflection_time: 0,
+          total_time: 0,
+          interruptions: 0,
+          sessions_completed: 0,
+        });
+        setPeakHours((peakData as PeakHour[]) || []);
+        setDistraction((distractionData as DistractionProfile) ?? {
+          idle_count: 0,
+          away_count: 0,
+          interrupt_count: 0,
+        });
+      } catch (error) {
+        console.error('useAnalytics load failure', error);
+        setMetrics({
+          focus_time: 0,
+          distraction_time: 0,
+          reflection_time: 0,
+          total_time: 0,
+          interruptions: 0,
+          sessions_completed: 0,
+        });
+        setPeakHours([]);
+        setDistraction({ idle_count: 0, away_count: 0, interrupt_count: 0 });
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     load();
   }, []);
 
-  return { metrics, peakHours, distraction };
+  return { metrics, peakHours, distraction, isLoading };
 };

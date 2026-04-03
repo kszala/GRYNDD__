@@ -1,5 +1,4 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BreakPromptModal } from './BreakPromptModal';
 import { SessionStartOverlay } from './SessionStartOverlay';
 import { StopSessionModal } from './StopSessionModal';
 import { useTimerStore, TimerSession } from '../store/timestore';
@@ -58,10 +57,8 @@ export const Timer: React.FC = () => {
   const pause = useTimerStore((state) => state.pause);
   const requestResume = useTimerStore((state) => state.requestResume);
   const stop = useTimerStore((state) => state.stop);
+  const markInterruptedRunning = useTimerStore((state) => state.markInterruptedRunning);
   const startBreakTimer = useTimerStore((state) => state.startBreakTimer);
-  const dismissBreakPrompt = useTimerStore((state) => state.dismissBreakPrompt);
-  const showBreakPrompt = useTimerStore((state) => state.showBreakPrompt);
-  const lastCompletedSession = useTimerStore((state) => state.lastCompletedSession);
   const sessions = useTimerStore((state) => state.sessions);
   const timeLeft = useTimerStore((state) => state.timeLeft);
   const preciseTimeLeft = useTimerStore((state) => state.preciseTimeLeft);
@@ -176,15 +173,6 @@ export const Timer: React.FC = () => {
       ? (isRunning ? 'Pause' : 'Resume')
       : 'Start Focus';
 
-  const breakPromptSessionData = lastCompletedSession ? {
-    subject: lastCompletedSession.subject,
-    duration: lastCompletedSession.duration,
-    actualDuration: lastCompletedSession.actualDuration,
-    type: (lastCompletedSession.type === 'interrupted' ? 'focus' : lastCompletedSession.type) as 'focus' | 'break',
-    sessionId: lastCompletedSession.sessionId,
-    wasEndedEarly: lastCompletedSession.wasEndedEarly
-  } : undefined;
-
   return (
     <>
       <style>{`
@@ -296,21 +284,19 @@ export const Timer: React.FC = () => {
         </div>
       </div>
 
-        {showBreakPrompt && breakPromptSessionData && (
-          <BreakPromptModal
-            isOpen={showBreakPrompt}
-            sessionData={breakPromptSessionData}
-            onStartBreak={(durationSeconds) => startBreakTimer(durationSeconds)}
-            onClose={() => dismissBreakPrompt()}
-          />
-        )}
-
         {showStopModal && (
           <StopSessionModal
             isOpen={showStopModal}
             onClose={() => setShowStopModal(false)}
-            onSubmit={(reason, details) => {
-              stop(reason, details, true);
+            onLogEarly={({ takeBreak, note, breakMinutes }) => {
+              stop('log_session_early', note || 'logged early', false);
+              if (takeBreak) {
+                startBreakTimer(Math.max(1, breakMinutes || 5) * 60);
+              }
+              setShowStopModal(false);
+            }}
+            onInterrupted={() => {
+              markInterruptedRunning();
               setShowStopModal(false);
             }}
           />

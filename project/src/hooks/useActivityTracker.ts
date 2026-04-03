@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { useTimerStore } from "@/store/timestore";
 
 export const useActivityTracker = () => {
-  const transitionState = useTimerStore((s) => s.transitionState);
+  const markAwayRunning = useTimerStore((s) => s.markAwayRunning);
+  const handleReturnFromAwayOrInterruption = useTimerStore((s) => s.handleReturnFromAwayOrInterruption);
   const currentState = useTimerStore((s) => s.currentState);
   const currentSessionId = useTimerStore((s) => s.currentSessionId);
 
@@ -11,6 +12,7 @@ export const useActivityTracker = () => {
 
   const updateActivity = () => {
     lastActivityRef.current = Date.now();
+    useTimerStore.setState({ lastUserInteractionAt: Date.now() });
   };
 
   useEffect(() => {
@@ -29,17 +31,17 @@ export const useActivityTracker = () => {
     const interval = setInterval(() => {
       const now = Date.now();
 
-      if (!currentSessionId || currentState === "away") {
+      if (!currentSessionId || currentState === "away_running" || currentState === "interrupted_running") {
         return;
       }
 
       if (currentState === "focus" && now - lastActivityRef.current > idleTimeout) {
-        transitionState("idle");
+        markAwayRunning();
       }
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [currentSessionId, currentState, transitionState]);
+  }, [currentSessionId, currentState, markAwayRunning]);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -47,13 +49,18 @@ export const useActivityTracker = () => {
         return;
       }
 
-      if (document.hidden) {
+      if (document.visibilityState === "hidden") {
         if (currentState === "focus") {
-          transitionState("away");
+          markAwayRunning();
         }
-      } else {
-        if (currentState === "away" || currentState === "idle") {
-          transitionState("paused", { reason: "awaiting_reflection", eventType: "reflection_start", returned: true });
+      }
+
+      if (document.visibilityState === "visible") {
+        if (currentState === "away_running") {
+          handleReturnFromAwayOrInterruption("tab_return");
+        }
+        if (currentState === "interrupted_running") {
+          handleReturnFromAwayOrInterruption("interrupt_return");
         }
       }
     };
@@ -63,5 +70,29 @@ export const useActivityTracker = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [currentSessionId, currentState, transitionState]);
+  }, [currentSessionId, currentState, markAwayRunning, handleReturnFromAwayOrInterruption]);
+
+  useEffect(() => {
+    const onReturnActivity = () => {
+      const state = useTimerStore.getState();
+      if (state.currentState === "away_running") {
+        state.handleReturnFromAwayOrInterruption("activity");
+      }
+      if (state.currentState === "interrupted_running") {
+        state.handleReturnFromAwayOrInterruption("interrupt_return");
+      }
+    };
+
+    window.addEventListener("mousemove", onReturnActivity, { passive: true });
+    window.addEventListener("keydown", onReturnActivity, { passive: true });
+    window.addEventListener("click", onReturnActivity, { passive: true });
+    window.addEventListener("touchstart", onReturnActivity, { passive: true });
+
+    return () => {
+      window.removeEventListener("mousemove", onReturnActivity);
+      window.removeEventListener("keydown", onReturnActivity);
+      window.removeEventListener("click", onReturnActivity);
+      window.removeEventListener("touchstart", onReturnActivity);
+    };
+  }, []);
 };

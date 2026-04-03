@@ -10,7 +10,7 @@ import type {
 
 type PlaylistRow = Database['public']['Tables']['study_playlists']['Row'];
 type PlaylistItemRow = Database['public']['Tables']['study_playlist_items']['Row'];
-type SessionRow = Database['public']['Tables']['video_sessions']['Row'];
+type VideoEventRow = Database['public']['Tables']['video_events']['Row'];
 
 const DEFAULT_TOPIC_NAME = 'Current Topic';
 
@@ -118,11 +118,115 @@ const buildPlaylist = async (playlist: PlaylistRow): Promise<GryndTubeTopicPlayl
   };
 };
 
+type DerivedVideoSession = {
+  video_id: string;
+  watched_seconds: number;
+  completion_percentage: number;
+  pause_count: number;
+  seek_count: number;
+  started_at: string;
+  ended_at: string | null;
+};
+
+const parseVideoEventMetadata = (value: unknown) => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const metadata = value as Record<string, unknown>;
+  const videoId = typeof metadata.videoId === 'string' ? metadata.videoId : null;
+  const topicId = typeof metadata.topicId === 'string' ? metadata.topicId : null;
+  const totalDurationSecondsRaw = metadata.totalDurationSeconds;
+  const totalDurationSeconds =
+    typeof totalDurationSecondsRaw === 'number' && Number.isFinite(totalDurationSecondsRaw)
+      ? Math.max(1, Math.floor(totalDurationSecondsRaw))
+      : 0;
+
+  const watchedSecondsRaw = metadata.watchedSeconds;
+  const watchedSeconds =
+    typeof watchedSecondsRaw === 'number' && Number.isFinite(watchedSecondsRaw)
+      ? Math.max(0, Math.floor(watchedSecondsRaw))
+      : 0;
+
+  if (!videoId) {
+    return null;
+  }
+
+  return {
+    videoId,
+    topicId,
+    totalDurationSeconds,
+    watchedSeconds,
+  };
+};
+
+const deriveSessionsFromVideoEvents = (
+  events: VideoEventRow[],
+  topicId: string,
+  allowedVideoIds: Set<string>
+): DerivedVideoSession[] => {
+  const bySession = new Map<string, VideoEventRow[]>();
+
+  for (const event of events) {
+    if (!bySession.has(event.session_id)) {
+      bySession.set(event.session_id, []);
+    }
+    bySession.get(event.session_id)!.push(event);
+  }
+
+  const sessions: DerivedVideoSession[] = [];
+
+  for (const rows of bySession.values()) {
+    const sorted = [...rows].sort((left, right) => {
+      const timeDelta = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+      if (timeDelta !== 0) {
+        return timeDelta;
+      }
+      return (left.event_sequence || 0) - (right.event_sequence || 0);
+    });
+
+    const firstMetadata = sorted
+      .map((row) => parseVideoEventMetadata(row.metadata))
+      .find((metadata): metadata is NonNullable<ReturnType<typeof parseVideoEventMetadata>> => Boolean(metadata));
+
+    if (!firstMetadata || firstMetadata.topicId !== topicId || !allowedVideoIds.has(firstMetadata.videoId)) {
+      continue;
+    }
+
+    const pauseCount = sorted.filter((row) => row.event_type === 'pause').length;
+    const seekCount = sorted.filter((row) => row.event_type === 'seek').length;
+    const watchedSeconds = sorted.reduce((maxSeconds, row) => {
+      const metadata = parseVideoEventMetadata(row.metadata);
+      const watchedFromMetadata = metadata?.watchedSeconds || 0;
+      const watchedFromVideoTime = typeof row.video_time_seconds === 'number'
+        ? Math.max(0, Math.floor(row.video_time_seconds))
+        : 0;
+      return Math.max(maxSeconds, watchedFromMetadata, watchedFromVideoTime);
+    }, 0);
+    const completionPercentage = firstMetadata.totalDurationSeconds > 0
+      ? Math.min(100, Math.round((watchedSeconds / firstMetadata.totalDurationSeconds) * 100))
+      : 0;
+    const endedAt = [...sorted].reverse().find((row) => row.event_type === 'end')?.timestamp || null;
+
+    sessions.push({
+      video_id: firstMetadata.videoId,
+      watched_seconds: watchedSeconds,
+      completion_percentage: completionPercentage,
+      pause_count: pauseCount,
+      seek_count: seekCount,
+      started_at: sorted[0].timestamp,
+      ended_at: endedAt,
+    });
+  }
+
+  return sessions;
+};
+
 const buildContinueLearning = (
   items: GryndTubeTopicPlaylistItem[],
-  sessions: SessionRow[]
+  sessions: DerivedVideoSession[]
 ): ContinueLearningItem | null => {
-  const sessionsByVideo = new Map<string, SessionRow>();
+  const sessionsByVideo = new Map<string, DerivedVideoSession>();
 
   for (const session of sessions) {
     const existing = sessionsByVideo.get(session.video_id);
@@ -183,23 +287,23 @@ export const playlistService = {
     }
 
     const { data: sessions, error } = await supabase
-      .from('video_sessions')
-      .select('*')
+      .from('video_events')
+      .select('id, event_id, event_sequence, session_id, user_id, event_type, timestamp, video_time_seconds, metadata')
       .eq('user_id', userId)
-      .eq('subject_id', topicId)
-      .in(
-        'video_id',
-        playlist.items.map((item) => item.videoId)
-      )
-      .order('started_at', { ascending: false });
+      .eq('metadata->>topicId', topicId)
+      .order('timestamp', { ascending: false })
+      .order('event_sequence', { ascending: false });
 
     if (error) {
       throw error;
     }
 
+    const allowedVideoIds = new Set(playlist.items.map((item) => item.videoId));
+    const derivedSessions = deriveSessionsFromVideoEvents(sessions || [], topicId, allowedVideoIds);
+
     return {
       playlist,
-      continueLearning: buildContinueLearning(playlist.items, sessions || []),
+      continueLearning: buildContinueLearning(playlist.items, derivedSessions),
     };
   },
 

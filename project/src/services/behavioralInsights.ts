@@ -1,4 +1,4 @@
-import supabase from '../supabaseClient';
+import { fetchSessionEvents, aggregateSessionsFromEvents } from './sessionEventAnalytics';
 
 export interface HourlyFocusInsight {
   hour: number;
@@ -21,51 +21,44 @@ export interface SubjectPerformanceInsight {
   totalActiveSeconds: number;
 }
 
-type BestHoursRow = {
-  start_time: string | null;
-  focus_score: number | null;
+const buildFocusScore = (focusSeconds: number, inactiveSeconds: number) => {
+  const total = focusSeconds + inactiveSeconds;
+  if (total <= 0) {
+    return 0;
+  }
+
+  return Math.round((focusSeconds / total) * 100);
 };
 
-type InterruptionPatternsRow = {
-  start_time: string | null;
-  interruption_count: number | null;
-};
+const buildAdherenceScore = (focusSeconds: number, inactiveSeconds: number) => {
+  const total = focusSeconds + inactiveSeconds;
+  if (total <= 0) {
+    return 0;
+  }
 
-type SubjectPerformanceRow = {
-  subject_id: string | null;
-  focus_score: number | null;
-  adherence_score: number | null;
-  active_focus_seconds: number | null;
+  return Math.round((1 - Math.min(1, inactiveSeconds / total)) * 100);
 };
 
 export async function computeBestStudyHours(
   userId: string
 ): Promise<HourlyFocusInsight[]> {
-  const { data, error } = await supabase
-    .from('session_analytics')
-    .select('start_time, focus_score')
-    .eq('user_id', userId)
-    .not('focus_score', 'is', null)
-    .not('start_time', 'is', null);
-
-  if (error || !data) {
+  const events = await fetchSessionEvents(userId);
+  if (!events.length) {
     return [];
   }
 
   const hourMap = new Map<number, { total: number; count: number }>();
+  const sessions = aggregateSessionsFromEvents(events);
 
-  for (const row of data as BestHoursRow[]) {
-    if (!row.start_time || row.focus_score == null) {
-      continue;
-    }
-
-    const hour = new Date(row.start_time).getUTCHours();
+  sessions.forEach((session) => {
+    const hour = new Date(session.startedAt).getUTCHours();
+    const score = buildFocusScore(session.focusSeconds, session.inactiveSeconds);
     const existing = hourMap.get(hour) ?? { total: 0, count: 0 };
     hourMap.set(hour, {
-      total: existing.total + row.focus_score,
+      total: existing.total + score,
       count: existing.count + 1,
     });
-  }
+  });
 
   return Array.from(hourMap.entries())
     .map(([hour, { total, count }]) => ({
@@ -79,32 +72,22 @@ export async function computeBestStudyHours(
 export async function computeInterruptionPatterns(
   userId: string
 ): Promise<InterruptionPatternInsight[]> {
-  const { data, error } = await supabase
-    .from('session_analytics')
-    .select('start_time, interruption_count')
-    .eq('user_id', userId)
-    .not('start_time', 'is', null);
-
-  if (error || !data) {
+  const events = await fetchSessionEvents(userId);
+  if (!events.length) {
     return [];
   }
 
   const hourMap = new Map<number, { totalInterruptions: number; count: number }>();
+  const sessions = aggregateSessionsFromEvents(events);
 
-  for (const row of data as InterruptionPatternsRow[]) {
-    if (!row.start_time) {
-      continue;
-    }
-
-    const hour = new Date(row.start_time).getUTCHours();
-    const interruptions = row.interruption_count ?? 0;
+  sessions.forEach((session) => {
+    const hour = new Date(session.startedAt).getUTCHours();
     const existing = hourMap.get(hour) ?? { totalInterruptions: 0, count: 0 };
-
     hourMap.set(hour, {
-      totalInterruptions: existing.totalInterruptions + interruptions,
+      totalInterruptions: existing.totalInterruptions + session.interruptionCount,
       count: existing.count + 1,
     });
-  }
+  });
 
   return Array.from(hourMap.entries())
     .map(([hour, { totalInterruptions, count }]) => ({
@@ -119,50 +102,41 @@ export async function computeInterruptionPatterns(
 export async function computeSubjectPerformance(
   userId: string
 ): Promise<SubjectPerformanceInsight[]> {
-  const { data, error } = await supabase
-    .from('session_analytics')
-    .select('subject_id, focus_score, adherence_score, active_focus_seconds')
-    .eq('user_id', userId)
-    .not('subject_id', 'is', null);
-
-  if (error || !data) {
+  const events = await fetchSessionEvents(userId);
+  if (!events.length) {
     return [];
   }
 
+  const sessions = aggregateSessionsFromEvents(events);
   const subjectMap = new Map<string, {
     focusTotal: number;
     adherenceTotal: number;
-    adherenceCount: number;
     activeTotal: number;
     count: number;
   }>();
 
-  for (const row of data as SubjectPerformanceRow[]) {
-    const id = row.subject_id ?? 'unknown';
+  sessions.forEach((session) => {
+    const id = session.subjectLabel || 'unknown';
     const existing = subjectMap.get(id) ?? {
       focusTotal: 0,
       adherenceTotal: 0,
-      adherenceCount: 0,
       activeTotal: 0,
       count: 0,
     };
 
     subjectMap.set(id, {
-      focusTotal: existing.focusTotal + (row.focus_score ?? 0),
-      adherenceTotal: existing.adherenceTotal + (row.adherence_score ?? 0),
-      adherenceCount: existing.adherenceCount + (row.adherence_score != null ? 1 : 0),
-      activeTotal: existing.activeTotal + (row.active_focus_seconds ?? 0),
+      focusTotal: existing.focusTotal + buildFocusScore(session.focusSeconds, session.inactiveSeconds),
+      adherenceTotal: existing.adherenceTotal + buildAdherenceScore(session.focusSeconds, session.inactiveSeconds),
+      activeTotal: existing.activeTotal + session.focusSeconds,
       count: existing.count + 1,
     });
-  }
+  });
 
   return Array.from(subjectMap.entries())
     .map(([subjectId, subject]) => ({
       subjectId,
       avgFocusScore: Math.round(subject.focusTotal / subject.count),
-      avgAdherenceScore: subject.adherenceCount > 0
-        ? Math.round(subject.adherenceTotal / subject.adherenceCount)
-        : 0,
+      avgAdherenceScore: Math.round(subject.adherenceTotal / subject.count),
       sessionCount: subject.count,
       totalActiveSeconds: subject.activeTotal,
     }))

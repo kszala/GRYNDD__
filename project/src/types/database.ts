@@ -81,11 +81,17 @@ export interface Database {
       session_events: {
         Row: {
           event_id: string;
+          event_sequence: number;
           session_id: string;
           user_id: string;
           event_type: string;
           event_timestamp: string;
+          event_category: string | null;
+          session_phase: string | null;
+          duration_since_last_event_seconds: number | null;
           metadata: Json | null;
+          reason: string | null;
+          reflection: string | null;
           inserted_at: string | null;
         };
         Insert: Omit<Database['public']['Tables']['session_events']['Row'], 'inserted_at'>;
@@ -116,6 +122,8 @@ export interface Database {
       video_events: {
         Row: {
           id: string;
+          event_id: string;
+          event_sequence: number;
           session_id: string;
           user_id: string;
           event_type: 'play' | 'pause' | 'seek' | 'heartbeat' | 'end';

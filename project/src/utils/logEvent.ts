@@ -8,6 +8,15 @@ type LogEventInput = {
   metadata?: Record<string, unknown>;
 };
 
+const sessionEventSequence = new Map<string, number>();
+
+const nextEventSequence = (sessionId: string) => {
+  const current = sessionEventSequence.get(sessionId) ?? Date.now() * 1000;
+  const next = current + 1;
+  sessionEventSequence.set(sessionId, next);
+  return next;
+};
+
 export const logEvent = async ({
   sessionId,
   type,
@@ -30,12 +39,17 @@ export const logEvent = async ({
     }
 
     const durationSeconds = typeof metadata?.duration === 'number' ? metadata.duration : null;
+    const eventSequence = nextEventSequence(sessionId);
+    const eventTimestamp = new Date().toISOString();
+    const eventId = `${sessionId}:${type}:${eventSequence}:${eventTimestamp}`;
 
     const payload = {
+      event_id: eventId,
+      event_sequence: eventSequence,
       session_id: sessionId,
       user_id: user.id,
       event_type: type,
-      event_timestamp: new Date().toISOString(),
+      event_timestamp: eventTimestamp,
       event_category: eventCategory ?? null,
       session_phase: sessionPhase ?? null,
       duration_since_last_event_seconds: durationSeconds,
@@ -46,7 +60,10 @@ export const logEvent = async ({
 
     const { data, error } = await supabase
       .from('session_events')
-      .insert([payload])
+      .upsert([payload], {
+        onConflict: 'event_id',
+        ignoreDuplicates: true,
+      })
       .select();
 
     console.log('INSERT RESPONSE:', data, error);

@@ -1,6 +1,5 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SessionStartOverlay } from './SessionStartOverlay';
-import { StopSessionModal } from './StopSessionModal';
 import { useTimerStore, TimerSession } from '../store/timestore';
 import {
   activateGryndMode,
@@ -73,7 +72,6 @@ export const Timer: React.FC = () => {
   const [durationMinutes, setDurationMinutes] = useState(25);
   const [gryndModeActive, setGryndModeActive] = useState(false);
   const [showStartOverlay, setShowStartOverlay] = useState(false);
-  const [showStopModal, setShowStopModal] = useState(false);
   const [lastSessionForSubject, setLastSessionForSubject] = useState<LastSessionSnapshot | null>(null);
   const previousSessionIdRef = useRef<string | null>(null);
 
@@ -163,7 +161,7 @@ export const Timer: React.FC = () => {
       return;
     }
 
-    setShowStopModal(true);
+    stop();
   };
 
   const subjectLabel = sessionType === 'break' ? 'Break Time' : activeSubject;
@@ -283,24 +281,6 @@ export const Timer: React.FC = () => {
           </div>
         </div>
       </div>
-
-        {showStopModal && (
-          <StopSessionModal
-            isOpen={showStopModal}
-            onClose={() => setShowStopModal(false)}
-            onLogEarly={({ takeBreak, note, breakMinutes }) => {
-              stop('log_session_early', note || 'logged early', false);
-              if (takeBreak) {
-                startBreakTimer(Math.max(1, breakMinutes || 5) * 60);
-              }
-              setShowStopModal(false);
-            }}
-            onInterrupted={() => {
-              markInterruptedRunning();
-              setShowStopModal(false);
-            }}
-          />
-        )}
     </>
   );
 };

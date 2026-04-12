@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { HashRouter } from 'react-router-dom';
+import './lib/presenceTracker'; // Initialize presence tracker
+import { initAttentionEngine } from './lib/attentionEngine';
+
+initAttentionEngine();
 
 // Add error boundary for debugging
 class ErrorBoundary extends React.Component<

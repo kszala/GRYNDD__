@@ -3,16 +3,26 @@ import { useTimerStore } from "@/store/timestore";
 
 export const useActivityTracker = () => {
   const markAwayRunning = useTimerStore((s) => s.markAwayRunning);
-  const handleReturnFromAwayOrInterruption = useTimerStore((s) => s.handleReturnFromAwayOrInterruption);
+  const handleReturnFromAway = useTimerStore((s) => s.handleReturnFromAway);
+  const handleReturnFromInterruption = useTimerStore((s) => s.handleReturnFromInterruption);
+  const handleReturnFromPostSessionAway = useTimerStore((s) => s.handleReturnFromPostSessionAway);
+  const detectIntentionalActivity = useTimerStore((s) => s.detectIntentionalActivity);
   const currentState = useTimerStore((s) => s.currentState);
   const currentSessionId = useTimerStore((s) => s.currentSessionId);
+  const postSessionAwayEnabled = useTimerStore((s) => s.postSessionAwayEnabled);
+  const returnDetectionEnabled = useTimerStore((s) => s.returnDetectionEnabled);
 
   const lastActivityRef = useRef(Date.now());
-  const idleTimeout = 60 * 1000; // 60 sec
+  const idleTimeout = 30 * 1000; // 30 sec minimum before away/interruption detection
 
   const updateActivity = () => {
     lastActivityRef.current = Date.now();
     useTimerStore.setState({ lastUserInteractionAt: Date.now() });
+
+    // If return detection is enabled, call detectIntentionalActivity
+    if (returnDetectionEnabled) {
+      detectIntentionalActivity();
+    }
   };
 
   useEffect(() => {
@@ -35,7 +45,7 @@ export const useActivityTracker = () => {
         return;
       }
 
-      if (currentState === "focus" && now - lastActivityRef.current > idleTimeout) {
+      if (currentState === "active" && now - lastActivityRef.current > idleTimeout) {
         markAwayRunning();
       }
     }, 5000);
@@ -43,24 +53,49 @@ export const useActivityTracker = () => {
     return () => clearInterval(interval);
   }, [currentSessionId, currentState, markAwayRunning]);
 
+  // Post-session away detection
   useEffect(() => {
-    const handleVisibility = () => {
-      if (!currentSessionId) {
+    const interval = setInterval(() => {
+      const now = Date.now();
+
+      if (currentSessionId || !postSessionAwayEnabled) {
         return;
       }
 
-      if (document.visibilityState === "hidden") {
-        if (currentState === "focus") {
-          markAwayRunning();
-        }
+      if (now - lastActivityRef.current > idleTimeout) {
+        // Mark post-session away start
+        useTimerStore.setState({
+          postSessionAwayStartTime: lastActivityRef.current + idleTimeout,
+        });
       }
+    }, 5000);
 
-      if (document.visibilityState === "visible") {
-        if (currentState === "away_running") {
-          handleReturnFromAwayOrInterruption("tab_return");
+    return () => clearInterval(interval);
+  }, [currentSessionId, postSessionAwayEnabled]);
+
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (currentSessionId) {
+        // During active session
+        if (document.visibilityState === "hidden") {
+          if (currentState === "active") {
+            markAwayRunning();
+          }
         }
-        if (currentState === "interrupted_running") {
-          handleReturnFromAwayOrInterruption("interrupt_return");
+
+        if (document.visibilityState === "visible") {
+          if (currentState === "away_running") {
+            handleReturnFromAway("tab_return");
+          }
+          if (currentState === "interrupted_running" && returnDetectionEnabled) {
+            handleReturnFromInterruption("interrupt_return");
+          }
+        }
+      } else if (postSessionAwayEnabled) {
+        // Post-session away detection
+        if (document.visibilityState === "visible") {
+          handleReturnFromPostSessionAway("tab_return");
         }
       }
     };
@@ -70,16 +105,19 @@ export const useActivityTracker = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [currentSessionId, currentState, markAwayRunning, handleReturnFromAwayOrInterruption]);
+  }, [currentSessionId, currentState, markAwayRunning, handleReturnFromAway, handleReturnFromInterruption, postSessionAwayEnabled, handleReturnFromPostSessionAway]);
 
   useEffect(() => {
     const onReturnActivity = () => {
       const state = useTimerStore.getState();
       if (state.currentState === "away_running") {
-        state.handleReturnFromAwayOrInterruption("activity");
+        state.handleReturnFromAway("activity");
       }
-      if (state.currentState === "interrupted_running") {
-        state.handleReturnFromAwayOrInterruption("interrupt_return");
+      if (state.currentState === "interrupted_running" && state.returnDetectionEnabled) {
+        state.handleReturnFromInterruption("interrupt_return");
+      }
+      if (!state.currentSessionId && state.postSessionAwayEnabled) {
+        state.handleReturnFromPostSessionAway("activity");
       }
     };
 

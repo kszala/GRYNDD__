@@ -1,5 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import supabase from '../supabaseClient';
+import { GryndLogo } from './GryndLogo';
 
 // Type definitions
 interface UserData {
@@ -164,7 +165,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       {/* Navbar - Minimal, Rize style */}
       <nav className="fixed top-0 left-0 right-0 z-50 bg-[#0A0C0F]/95 backdrop-blur-sm border-b border-[#1F2128] px-8 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="text-lg font-mono font-medium tracking-tight">GRYND</div>
+          <GryndLogo />
           <button
             onClick={signInWithGoogle}
             disabled={isLoading}

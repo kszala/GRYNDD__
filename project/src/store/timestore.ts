@@ -9,6 +9,7 @@ import { computeIdealVsActual } from '../services/idealVsActual';
 import { logEvent } from '../utils/logEvent';
 import { addToQueue, registerOutboxHandler, startQueueProcessor } from '../utils/outboxQueue';
 import { validateExplanation } from '../utils/validateExplanation';
+import { transitionAttention } from '../lib/attentionEngine';
 
 export interface TimerSession {
   id: string;
@@ -88,7 +89,7 @@ type LogSessionEventOutboxPayload = {
 
 type SessionState =
   | 'idle'
-  | 'focus'
+  | 'active'  // renamed from 'focus'
   | 'paused'
   | 'interrupted'
   | 'away'
@@ -98,7 +99,7 @@ type SessionState =
   | 'interrupted_pending_reason';
 
 type EnforcementType = 'AWAY' | 'INTERRUPTED';
-type ReflectionPromptType = 'resume_reason' | 'away_reflection' | 'enforcement_reason';
+type ReflectionPromptType = 'resume_reason' | 'away_reflection' | 'enforcement_reason' | 'post_session_away_reflection' | 'return_reflection';
 
 interface PendingEnforcementState {
   type: EnforcementType;
@@ -138,6 +139,12 @@ interface TimerState {
   lastPrecisionUpdate: number;
   sessions: TimerSession[];
   lastCompletedSession: TimerSession | null;
+  postSessionAwayEnabled: boolean;
+  postSessionAwayStartTime: number | null;
+  interruptionMonitoringEnabled: boolean;
+  returnDetectionEnabled: boolean;
+  returnDetectionStartTime: number | null;
+  lastIntentionalActivity: number;
   breakStartTime: number | null;
   showBreakPrompt: boolean;
   interruptedTime: number;
@@ -164,7 +171,7 @@ interface TimerState {
   currentState: SessionState;
   lastEventTime: number | null;
   reflectionRequired: boolean;
-  reflectionType: 'away' | 'idle' | null;
+  reflectionType: 'away' | 'idle' | 'post_session_away' | 'interruption_return' | null;
   reflectionStartTime: number | null;
   pendingEnforcement: PendingEnforcementState | null;
   lastAwayOrInterruptionAt: number | null;
@@ -172,10 +179,16 @@ interface TimerState {
   interruptionStartTime: number | null;
   dailyEnforcementStats: DailyEnforcementStats;
   lastEnforcementFeedback: string | null;
+  stopModalOpen: boolean;
+  returnModalOpen: boolean;
+  returnModalType: 'short' | 'medium' | 'long' | null;
+  awayDuration: number;
   
   // Actions
   startSession: (subject: string, duration?: number, sessionType?: 'focus' | 'break' | 'interrupted', subjectId?: string, topicId?: string) => void;
-  pause: (reason?: string, requireResumeReason?: boolean, targetState?: SessionState) => void;
+  pause: (reason?: string, requireResumeReason?: boolean, targetState?: SessionState, mood?: number) => void;
+  pauseTimer: (reason?: string) => void;
+  stopTimer: () => void;
   resume: (reason?: string) => void;
   requestResume: () => void;
   dismissReflectionPrompt: () => void;
@@ -184,11 +197,17 @@ interface TimerState {
   submitReturnReflection: (reflection: string) => void;
   markAwayRunning: () => void;
   markInterruptedRunning: () => void;
-  handleReturnFromAwayOrInterruption: (trigger: 'visibility' | 'activity' | 'tab_return' | 'interrupt_return') => void;
+  handleReturnFromAway: (trigger: 'visibility' | 'activity' | 'tab_return') => void;
+  handleReturnFromInterruption: (trigger: 'interrupt_return') => void;
+  handleReturnFromPostSessionAway: (trigger: 'visibility' | 'activity' | 'tab_return') => void;
+  startReturnDetection: () => void;
+  stopReturnDetection: () => void;
+  detectIntentionalActivity: () => void;
+  interrupt: () => void;
   submitEnforcementExplanation: (reflection: string, typingTimeMs?: number) => boolean;
   useQuickBreakShortcut: () => boolean;
   restorePendingEnforcement: () => void;
-  stop: (reason?: string, details?: string, wasEndedEarly?: boolean) => void;
+  stop: (reason?: string, details?: string, wasEndedEarly?: boolean, mood?: number) => void;
   complete: (focusRating?: number, reflection?: string, tags?: string[], takeBreak?: boolean) => void;
   endBreak: (reason?: 'manual_end' | 'timer_end') => void;
   startBreakTimer: (durationSeconds: number) => void;
@@ -199,6 +218,12 @@ interface TimerState {
   recordInterruption: () => void;
   updateActiveFocusTime: () => void;
   recoverActiveSession: () => void;
+  openStopModal: () => void;
+  closeStopModal: () => void;
+  handleStopModalDone: (mood?: number) => void;
+  handleStopModalTakeBreak: (mood?: number) => void;
+  closeReturnModal: () => void;
+  handleReturnModalSubmit: (action: 'resume' | 'stay_idle' | 'interrupted' | 'distracted' | 'still_studying', mood?: number) => void;
   
   // Analytics methods
   saveSessionToDatabase: (session: TimerSession, events?: TimerEvent[]) => Promise<void>;
@@ -259,6 +284,12 @@ const initializeSafeDefaults = () => ({
   lastPrecisionUpdate: 0,
   sessions: [] as TimerSession[],
   lastCompletedSession: null,
+  postSessionAwayEnabled: false,
+  postSessionAwayStartTime: null,
+  interruptionMonitoringEnabled: false,
+  returnDetectionEnabled: false,
+  returnDetectionStartTime: null,
+  lastIntentionalActivity: Date.now(),
   breakStartTime: null,
   showBreakPrompt: false,
   interruptedTime: 0,
@@ -291,6 +322,10 @@ const initializeSafeDefaults = () => ({
   interruptionStartTime: null,
   dailyEnforcementStats: createDailyEnforcementStats(),
   lastEnforcementFeedback: null,
+  stopModalOpen: false,
+  returnModalOpen: false,
+  returnModalType: null,
+  awayDuration: 0,
 });
 
 // Helper function to save sessions
@@ -418,7 +453,7 @@ const getDeviceInfo = () => {
 
 const computeBasicSessionMetrics = (events: TimerEvent[]) => {
   if (!Array.isArray(events) || events.length === 0) {
-    return { focusSeconds: 0, pauseSeconds: 0, pauseCount: 0 };
+    return { focusSeconds: 0, pauseSeconds: 0, pauseCount: 0, totalInterruptionSeconds: 0 };
   }
 
   const sorted = [...events].sort((left, right) => left.timestamp - right.timestamp);
@@ -426,8 +461,21 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
   let pauseMs = 0;
   let activeStart: number | null = null;
   let pauseStart: number | null = null;
+  let interruptionStart: number | null = null;
+  let totalInterruptionMs = 0;
 
   for (const event of sorted) {
+    if (event.type === 'interrupt') {
+      interruptionStart = event.timestamp;
+      continue;
+    }
+
+    if (event.type === 'resume' && interruptionStart !== null) {
+      totalInterruptionMs += event.timestamp - interruptionStart;
+      interruptionStart = null;
+      continue;
+    }
+
     if (event.type === 'start' || event.type === 'resume' || event.type === 'RESUME' || event.type === 'RETURN') {
       if (pauseStart !== null) {
         pauseMs += Math.max(0, event.timestamp - pauseStart);
@@ -457,7 +505,7 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
       continue;
     }
 
-    if (event.type === 'complete' || event.type === 'abandon' || event.type === 'interrupt') {
+    if (event.type === 'complete' || event.type === 'abandon') {
       if (activeStart !== null) {
         focusMs += Math.max(0, event.timestamp - activeStart);
         activeStart = null;
@@ -473,6 +521,7 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
     focusSeconds: Math.max(0, Math.round(focusMs / 1000)),
     pauseSeconds: Math.max(0, Math.round(pauseMs / 1000)),
     pauseCount: sorted.filter((event) => event.type === 'pause').length,
+    totalInterruptionSeconds: Math.max(0, Math.round(totalInterruptionMs / 1000)),
   };
 };
 
@@ -507,7 +556,7 @@ const getHeartbeatElapsedFromMetadata = (metadata: unknown): number | null => {
 
 const mapStateToEvent = (state: SessionState) => {
   switch (state) {
-    case 'focus':
+    case 'active':
       return 'start';
     case 'paused':
       return 'pause';
@@ -538,7 +587,7 @@ const getEventCategory = (eventType: TimerEventType): EventCategory => {
 const getSessionPhase = (state: SessionState, eventType: TimerEventType): SessionPhase => {
   if (eventType.includes('reflection')) return 'reflection';
   if (eventType === 'complete') return 'completed';
-  if (state === 'focus') return 'active';
+  if (state === 'active') return 'active';
   if (state === 'away' || state === 'idle' || state === 'away_running' || state === 'interrupted_running' || state === 'away_pending_explanation' || state === 'interrupted_pending_reason') return 'inactive';
   return 'system';
 };
@@ -566,10 +615,9 @@ const countWords = (value: string): number =>
     .length;
 
 const getMinimumWordsForDuration = (durationSeconds: number): number => {
-  if (durationSeconds < 2 * 60) return 0;
-  if (durationSeconds < 5 * 60) return 5;
-  if (durationSeconds < 10 * 60) return 20;
-  return 50;
+  if (durationSeconds < 5 * 60) return 0; // No words required for < 5 minutes
+  if (durationSeconds < 10 * 60) return 10; // 10 words for 5-10 minutes
+  return 25; // 25 words for >= 10 minutes (reduced from 50)
 };
 
 const ENFORCEMENT_GRACE_THRESHOLD = 4;
@@ -840,7 +888,7 @@ export const useTimerStore = create<TimerState>()(
           active_focus_seconds: focusSeconds,
           pause_count: pauseCount,
           total_pause_duration_seconds: pauseSeconds,
-          total_interruption_seconds: 0,
+          total_interruption_seconds: derivedMetrics.totalInterruptionSeconds,
           focus_score: focusScore,
           adherence_score: idealVsActual.adherenceScore,
           delta_seconds: idealVsActual.deltaSeconds,
@@ -1129,7 +1177,7 @@ export const useTimerStore = create<TimerState>()(
             currentState: snapshot.isInterruptedMode
               ? 'interrupted'
               : snapshot.isRunning
-                ? 'focus'
+                ? 'active'
                 : 'paused',
             lastEventTime: snapshot.updatedAt,
             reflectionRequired: false,
@@ -1309,7 +1357,7 @@ export const useTimerStore = create<TimerState>()(
             currentState: isInterrupted
               ? 'interrupted'
               : !isPaused
-                ? 'focus'
+                ? 'active'
                 : 'paused',
             lastEventTime: Date.now(),
             resumeReasonRequired: isPaused,
@@ -1356,7 +1404,7 @@ export const useTimerStore = create<TimerState>()(
         let eventType = overrideEventType ?? mapStateToEvent(newState);
         if (
           !overrideEventType &&
-          newState === 'focus' &&
+          newState === 'active' &&
           (
             prevState === 'paused' ||
             prevState === 'away' ||
@@ -1516,7 +1564,7 @@ export const useTimerStore = create<TimerState>()(
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState('focus', {
+            transitionState('active', {
               sessionType,
               subject: subject.trim(),
               subjectId: subjectId || null,
@@ -1524,6 +1572,15 @@ export const useTimerStore = create<TimerState>()(
               duration
             });
           }
+
+          void transitionAttention({
+            nextState: 'FOCUS_ACTIVE',
+            source: 'timer',
+            metadata: {
+              sessionId,
+              action: 'start'
+            },
+          });
 
           const latestEvents = get().sessionEvents;
           addToQueue('save_session_analytics', {
@@ -1581,7 +1638,18 @@ export const useTimerStore = create<TimerState>()(
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState(targetState, trimmedReason ? { reason: trimmedReason } : {});
+            transitionState(targetState, trimmedReason ? { reason: trimmedReason } : { reason: 'pause' });
+          }
+
+          if (targetState === 'paused') {
+            void transitionAttention({
+              nextState: 'IDLE',
+              source: 'system',
+              metadata: {
+                sessionId: get().currentSessionId,
+                reason: trimmedReason || 'pause',
+              },
+            });
           }
 
           const snapshot = createCrossTabSnapshot(get());
@@ -1596,6 +1664,27 @@ export const useTimerStore = create<TimerState>()(
         } catch (error) {
           console.error('Failed to pause timer:', error);
           set({ isRunning: false });
+        }
+      },
+
+      pauseTimer: (reason = 'pause') => {
+        const state = get();
+        if (!state.currentSessionId || !state.isRunning) {
+          return;
+        }
+
+        get().pause(reason, false, 'paused');
+      },
+
+      stopTimer: () => {
+        const state = get();
+        if (!state.currentSessionId) {
+          return;
+        }
+
+        const complete = get().complete;
+        if (complete) {
+          complete(undefined, undefined, [], false);
         }
       },
 
@@ -1639,8 +1728,16 @@ export const useTimerStore = create<TimerState>()(
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState('focus', trimmedReason ? { reason: trimmedReason, eventType: 'RESUME' } : { eventType: 'RESUME' });
+            transitionState('active', trimmedReason ? { reason: trimmedReason, eventType: 'RESUME' } : { eventType: 'RESUME' });
           }
+
+          void transitionAttention({
+            nextState: 'FOCUS_ACTIVE',
+            source: 'timer',
+            metadata: {
+              sessionId: get().currentSessionId,
+            },
+          });
 
           const snapshot = createCrossTabSnapshot(get());
           writeActiveSessionSnapshot(snapshot);
@@ -1660,11 +1757,11 @@ export const useTimerStore = create<TimerState>()(
       requestResume: () => {
         const state = get();
         if (state.currentState === 'away_running') {
-          state.handleReturnFromAwayOrInterruption('activity');
+          state.handleReturnFromAway('activity');
           return;
         }
         if (state.currentState === 'interrupted_running') {
-          state.handleReturnFromAwayOrInterruption('interrupt_return');
+          state.handleReturnFromInterruption('interrupt_return');
           return;
         }
         state.resume();
@@ -1683,6 +1780,7 @@ export const useTimerStore = create<TimerState>()(
         const now = Date.now();
         const hasExistingRun =
           state.currentState === 'away_running' || state.currentState === 'interrupted_running';
+        const sessionId = state.currentSessionId;
 
         state.pause('away_detection', false, 'away_running');
         set({
@@ -1693,6 +1791,17 @@ export const useTimerStore = create<TimerState>()(
           activeReflectionPrompt: null,
           lastEnforcementError: null,
         });
+
+        if (sessionId) {
+          void transitionAttention({
+            nextState: 'AWAY',
+            source: 'presence',
+            metadata: {
+              sessionId,
+              reason: 'idle_timeout',
+            },
+          });
+        }
       },
 
       markInterruptedRunning: () => {
@@ -1714,6 +1823,10 @@ export const useTimerStore = create<TimerState>()(
         const hasExistingRun =
           state.currentState === 'away_running' || state.currentState === 'interrupted_running';
 
+        // Freeze current elapsed time - don't reset to 0
+        const currentElapsed = getCurrentSessionElapsedSeconds(state);
+        const sessionId = state.currentSessionId;
+
         set({
           isRunning: false,
           currentState: 'interrupted_running',
@@ -1727,9 +1840,11 @@ export const useTimerStore = create<TimerState>()(
           activeReflectionPrompt: null,
           lastEnforcementError: null,
           lastUserInteractionAt: now,
+          // Preserve elapsed time
+          interruptedTime: currentElapsed,
+          elapsedOffsetSeconds: currentElapsed,
         });
 
-        const sessionId = state.currentSessionId;
         if (sessionId) {
           enqueueTransition(async () => {
             enqueueSessionEvent({
@@ -1742,54 +1857,87 @@ export const useTimerStore = create<TimerState>()(
                 from: state.currentState,
                 to: 'interrupted_running',
                 interruptionStartTime: now,
+                preservedElapsedTime: currentElapsed,
               },
             });
           });
+
+          void transitionAttention({
+            nextState: 'AWAY',
+            source: 'system',
+            metadata: {
+              sessionId,
+              reason: 'interrupt_detected',
+            },
+          });
+        }
+
+        // Start return detection after 5 seconds
+        setTimeout(() => {
+          const currentState = get().currentState;
+          if (currentState === 'interrupted_running') {
+            get().startReturnDetection();
+          }
+        }, 5000);
+      },
+
+      startReturnDetection: () => {
+        const state = get();
+        if (state.currentState !== 'interrupted_running') {
+          return;
+        }
+
+        set({
+          returnDetectionEnabled: true,
+          returnDetectionStartTime: Date.now(),
+          lastIntentionalActivity: Date.now(),
+        });
+
+        console.log('🎯 Return detection started');
+      },
+
+      stopReturnDetection: () => {
+        set({
+          returnDetectionEnabled: false,
+          returnDetectionStartTime: null,
+        });
+      },
+
+      detectIntentionalActivity: () => {
+        const state = get();
+        if (!state.returnDetectionEnabled || state.currentState !== 'interrupted_running') {
+          return;
+        }
+
+        const now = Date.now();
+        set({ lastIntentionalActivity: now });
+
+        // Check if we have continuous activity (at least 1-2 seconds of activity)
+        const activityDuration = now - (state.returnDetectionStartTime || now);
+        if (activityDuration >= 2000) { // 2 seconds of continuous activity
+          console.log('🎯 Intentional return detected');
+          get().handleReturnFromInterruption('interrupt_return');
         }
       },
 
-      handleReturnFromAwayOrInterruption: (trigger) => {
+      handleReturnFromAway: (trigger) => {
         const state = get();
         if (!state.currentSessionId) {
           return;
         }
 
         const wasAway = state.currentState === 'away_running';
-        const wasInterrupted = state.currentState === 'interrupted_running';
-        if (!wasAway && !wasInterrupted) {
+        if (!wasAway) {
           return;
         }
 
         const now = Date.now();
         const startedAt = state.lastAwayOrInterruptionAt ?? state.lastEventTime ?? now;
         const durationSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
-        console.log('RETURN HANDLER CALLED', {
-          lastAwayOrInterruptionAt: state.lastAwayOrInterruptionAt,
-          now,
-          duration: durationSeconds,
-          trigger,
-        });
-        console.log('DURATION:', durationSeconds);
-        const isLongInterrupted = wasInterrupted && durationSeconds >= 10 * 60;
-        const baseMinWords = isLongInterrupted
-          ? 50
-          : getMinimumWordsForDuration(durationSeconds);
-        const enforcementType: EnforcementType = wasAway ? 'AWAY' : 'INTERRUPTED';
-        const normalizedStats = normalizeDailyEnforcementStats(state.dailyEnforcementStats);
-        const relaxedMinWords = isLongInterrupted
-          ? 50
-          : applyEnforcementGrace(baseMinWords, normalizedStats.totalEnforcements);
-        const nextStats: DailyEnforcementStats = {
-          ...normalizedStats,
-          totalLostSeconds: normalizedStats.totalLostSeconds + durationSeconds,
-          totalEnforcements: relaxedMinWords > 0
-            ? normalizedStats.totalEnforcements + 1
-            : normalizedStats.totalEnforcements,
-        };
-        const lostMinutes = Math.round(nextStats.totalLostSeconds / 60);
-        const feedback = `You lost ${lostMinutes} minute${lostMinutes === 1 ? '' : 's'} today due to interruptions.`;
 
-        if (relaxedMinWords <= 0) {
+        // For away, require reflection if away for more than 30 seconds
+        if (durationSeconds < 30) {
+          // Short away - just resume without reflection
           set({
             pendingEnforcement: null,
             activeReflectionPrompt: null,
@@ -1797,8 +1945,8 @@ export const useTimerStore = create<TimerState>()(
             interruptionStartTime: null,
             lastEnforcementError: null,
             awayReflectionRequired: false,
-            dailyEnforcementStats: nextStats,
-            lastEnforcementFeedback: feedback,
+            dailyEnforcementStats: state.dailyEnforcementStats,
+            lastEnforcementFeedback: null,
           });
 
           const transitionState = get().transitionState;
@@ -1806,7 +1954,7 @@ export const useTimerStore = create<TimerState>()(
             transitionState('paused', {
               eventType: 'RETURN',
               trigger,
-              from: enforcementType,
+              from: 'AWAY',
               duration_seconds: durationSeconds,
               enforcement_required: false,
             });
@@ -1816,45 +1964,119 @@ export const useTimerStore = create<TimerState>()(
           return;
         }
 
-        const pendingState: SessionState = wasAway
-          ? 'away_pending_explanation'
-          : 'interrupted_pending_reason';
+        // Long away - require reflection
+        const awayMinutes = Math.max(1, Math.round(durationSeconds / 60));
+        const minWords = Math.min(50, Math.max(10, awayMinutes * 2)); // Scale with time but cap at 50
+
         const promptState: ReflectionPromptState = {
-          type: 'enforcement_reason',
-          source: enforcementType,
-          minWords: relaxedMinWords,
+          type: 'away_reflection',
+          source: 'AWAY',
+          minWords: minWords,
           triggeredAt: now,
           validationError: null,
         };
 
         set({
-          pendingEnforcement: {
-            type: enforcementType,
-            minWords: relaxedMinWords,
-            startedAt,
-            durationSeconds,
-          },
           activeReflectionPrompt: promptState,
           resumeReasonRequired: false,
-          awayReflectionRequired: false,
+          awayReflectionRequired: true,
           lastEnforcementError: null,
           interruptionStartTime: null,
-          dailyEnforcementStats: nextStats,
-          lastEnforcementFeedback: feedback,
+          lastEnforcementFeedback: null,
         });
 
         const transitionState = get().transitionState;
         if (transitionState) {
-          transitionState(pendingState, {
+          transitionState('away_pending_explanation', {
             eventType: 'RETURN',
             trigger,
-            from: enforcementType,
+            from: 'AWAY',
             duration_seconds: durationSeconds,
             enforcement_required: true,
-            min_words: relaxedMinWords,
-            min_words_base: baseMinWords,
+            min_words: minWords,
           });
         }
+      },
+
+      handleReturnFromInterruption: (trigger) => {
+        const state = get();
+        if (!state.currentSessionId) {
+          return;
+        }
+
+        const wasInterrupted = state.currentState === 'interrupted_running';
+        if (!wasInterrupted) {
+          return;
+        }
+
+        const now = Date.now();
+        const startedAt = state.lastAwayOrInterruptionAt ?? state.lastEventTime ?? now;
+        const durationSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+
+        // Stop return detection
+        get().stopReturnDetection();
+
+        // Show return modal instead of enforcement
+        set({
+          activeReflectionPrompt: {
+            type: 'return_reflection',
+            minWords: 0, // No minimum for return modal
+            triggeredAt: now,
+            validationError: null,
+          },
+          reflectionRequired: true,
+          reflectionType: 'interruption_return',
+          reflectionStartTime: startedAt,
+          interruptionStartTime: null,
+          lastUserInteractionAt: now,
+        });
+
+        const transitionState = get().transitionState;
+        if (transitionState) {
+          transitionState('interrupted_pending_reason', {
+            eventType: 'RETURN_DETECTED',
+            trigger,
+            from: 'INTERRUPTED',
+            duration_seconds: durationSeconds,
+            return_modal_shown: true,
+          });
+        }
+      },
+
+      handleReturnFromPostSessionAway: (trigger) => {
+        const state = get();
+        if (!state.postSessionAwayEnabled || !state.postSessionAwayStartTime) {
+          return;
+        }
+
+        const now = Date.now();
+        const startedAt = state.postSessionAwayStartTime;
+        const durationSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+
+        // For post-session away, require reflection if away for more than 30 seconds
+        if (durationSeconds < 30) {
+          // Short away - just disable post-session away detection
+          set({
+            postSessionAwayEnabled: false,
+            postSessionAwayStartTime: null,
+          });
+          return;
+        }
+
+        // Long away - show reflection prompt
+        set({
+          postSessionAwayEnabled: false,
+          postSessionAwayStartTime: null,
+          activeReflectionPrompt: {
+            type: 'post_session_away_reflection',
+            minWords: 25,
+            triggeredAt: now,
+            validationError: null,
+          },
+          reflectionRequired: true,
+          reflectionType: 'post_session_away',
+          reflectionStartTime: startedAt,
+        });
       },
 
       submitEnforcementExplanation: (reflection, typingTimeMs = 0) => {
@@ -1932,7 +2154,7 @@ export const useTimerStore = create<TimerState>()(
 
         const transitionState = get().transitionState;
         if (transitionState) {
-          transitionState('focus', {
+          transitionState('active', {
             reason: reflection.trim(),
             eventType: 'RESUME',
             enforcement_completed: true,
@@ -2028,6 +2250,8 @@ export const useTimerStore = create<TimerState>()(
         get().markAwayRunning();
       },
 
+      // Optional improvement: PATCH the latest `attention_blocks` row (state AWAY) with
+      // metadata.reason derived from this reflection so dashboard distraction labels stay accurate.
       submitAwayReflection: (reflection) => {
         const pending = get().pendingEnforcement;
         if (pending) {
@@ -2063,7 +2287,6 @@ export const useTimerStore = create<TimerState>()(
         }
 
         const reflectionType = get().reflectionType;
-
         const transitionState = get().transitionState;
         if (transitionState) {
           transitionState('paused', {
@@ -2079,221 +2302,59 @@ export const useTimerStore = create<TimerState>()(
           reflectionRequired: false,
           reflectionType: null,
           reflectionStartTime: null,
+          activeReflectionPrompt: null,
+          lastUserInteractionAt: Date.now(),
         });
 
-        if (transitionState) {
-          transitionState('focus', {
-            returned: true,
-            returnedFrom: reflectionType || undefined
-          });
-        }
+        get().resume(trimmedReflection || 'return');
       },
 
       stop: (reason, details, wasEndedEarly = true) => {
         try {
           const trimmedReason = reason?.trim();
           const trimmedDetails = details?.trim();
-          if (wasEndedEarly && (!trimmedReason || !trimmedDetails)) {
+          if (!wasEndedEarly && (!trimmedReason || !trimmedDetails)) {
             console.warn('Stop blocked: interruption reason and details are required.');
             return;
           }
 
-          const { 
-            precisionTimer, 
-            currentSessionId, 
-            sessions, 
-            sessionStartTime, 
-            totalTime, 
-            timeLeft, 
-            elapsedOffsetSeconds,
-            syllabusId,
-            activeFocusTime,
-            pauseCount,
-            totalPauseTime,
-            interruptionCount,
-          } = get();
+          const state = get();
+          const now = Date.now();
 
-          // Final active focus time update
-          const updateActiveFocusTime = get().updateActiveFocusTime;
-          if (updateActiveFocusTime) {
-            updateActiveFocusTime();
-          }
+          // If interrupted, preserve current elapsed time
+          const currentElapsed = getCurrentSessionElapsedSeconds(state);
 
-          let shouldStartInterrupted = false;
-          let interruptedTimeValue = 0;
+          // Stop the timer and open modal
+          set({
+            isRunning: false,
+            stopModalOpen: true,
+            // Preserve session data for decision
+            interruptedTime: trimmedReason === 'Interrupted' ? currentElapsed : state.interruptedTime,
+          });
 
           const transitionState = get().transitionState;
           if (transitionState) {
-            transitionState('idle', { completed: false, reason: trimmedReason, details: trimmedDetails, wasEndedEarly, eventType: 'abandon' });
-          }
-          const updatedEvents = get().sessionEvents;
-
-          if (currentSessionId && Array.isArray(sessions)) {
-            const sessionIndex = sessions.findIndex(s => s && s.id === currentSessionId);
-            if (sessionIndex !== -1 && sessions[sessionIndex]) {
-              const updatedSessions = [...sessions];
-              const actualDuration = getElapsedSeconds({
-                precisionTimer,
-                elapsedOffsetSeconds,
-                sessionStartTime,
-                totalTime,
-                timeLeft,
-              });
-
-              if (precisionTimer && typeof precisionTimer.stop === 'function') {
-                precisionTimer.stop();
-              }
-              
-              const updatedSession = {
-                ...updatedSessions[sessionIndex],
-                endTime: new Date(),
-                actualDuration,
-                activeFocusSeconds: Math.floor(activeFocusTime),
-                completed: false,
-                stopReason: trimmedReason,
-                stopReasonDetails: trimmedDetails,
-                wasEndedEarly,
-                syllabusId: syllabusId,
-                pauseCount: pauseCount,
-                totalPauseDuration: Math.floor(totalPauseTime),
-                interruptionCount: interruptionCount + 1,
-                productivityScore: activeFocusTime > 0 && actualDuration > 0 
-                  ? Math.min(1.0, activeFocusTime / actualDuration)
-                  : 0
-              };
-
-              updatedSessions[sessionIndex] = updatedSession;
-
-              console.log('🎯 Session stopped:', updatedSession);
-
-              // Save to database
-              const updateFocusPatterns = get().updateFocusPatterns;
-
-              addToQueue('save_session_analytics', {
-                session: serializeSessionForQueue(updatedSession),
-                events: updatedEvents,
-              } as SaveSessionOutboxPayload);
-              if (updateFocusPatterns) {
-                updateFocusPatterns(updatedSession);
-              }
-
-              if (trimmedReason && wasEndedEarly && updatedSession.type === 'focus') {
-                shouldStartInterrupted = true;
-                interruptedTimeValue = actualDuration;
-                console.log('🎯 Will start interrupted timer from:', interruptedTimeValue);
-              }
-
-              set({
-                sessions: updatedSessions,
-                lastCompletedSession: updatedSession,
-                interruptedTime: interruptedTimeValue,
-              });
-              
-              saveSessionsToStorage(updatedSessions);
-            }
+            transitionState('idle', {
+              reason: trimmedReason,
+              details: trimmedDetails,
+              wasEndedEarly,
+              preservedElapsedTime: currentElapsed,
+              eventType: 'STOP_CLICKED'
+            });
           }
 
-          if (currentSessionId) {
-            stopHeartbeatInterval(currentSessionId);
+          // Stop precision timer if running
+          if (state.precisionTimer && typeof state.precisionTimer.pause === 'function') {
+            state.precisionTimer.pause();
           }
 
-          set({
-            currentSessionId: null,
-            timeLeft: 0,
-            totalTime: 0,
-            preciseTimeLeft: 0,
-            isRunning: false,
-            subject: '',
-            subjectId: null,
-            topicId: null,
-            syllabusId: null,
-            startTime: null,
-            precisionTimer: null,
-            sessionStartTime: null,
-            isInterruptedMode: false,
-            elapsedOffsetSeconds: 0,
-            sessionOwnerTabId: null,
-            isSessionLeader: true,
-            // Reset analytics counters
-            pauseStartTime: null,
-            totalPauseTime: 0,
-            pauseCount: 0,
-            lastActiveTime: 0,
-            activeFocusTime: 0,
-            // Session events tracking
-            sessionEvents: [],
-            resumeReasonRequired: false,
-            activeReflectionPrompt: null,
-            awayReflectionRequired: false,
-            lastUserInteractionAt: Date.now(),
-            currentState: 'idle' as SessionState,
-            lastEventTime: null,
-            reflectionRequired: false,
-            reflectionType: null,
-            reflectionStartTime: null,
-            pendingEnforcement: null,
-            lastAwayOrInterruptionAt: null,
-            lastEnforcementError: null,
-          });
-
-          setSafeTitle('GRYND - Build Relentless Consistency');
-          writeActiveSessionSnapshot(null);
-          emitCrossTabEvent({
-            type: 'CLEAR_ACTIVE_SESSION',
-            sessionId: currentSessionId,
-            sourceTabId: tabId
-          });
-
-          if (shouldStartInterrupted) {
-            console.log('🎯 Auto-starting interrupted timer...');
-            setTimeout(() => {
-              const startInterruptedMethod = get().startInterruptedTimer;
-              if (startInterruptedMethod) {
-                startInterruptedMethod();
-              }
-            }, 100);
+          // Stop heartbeat
+          if (state.currentSessionId) {
+            stopHeartbeatInterval(state.currentSessionId);
           }
 
         } catch (error) {
-          console.error('Failed to stop timer:', error);
-          const resetDefaults: Partial<TimerState> = {
-            currentSessionId: null,
-            timeLeft: 0,
-            totalTime: 0,
-            preciseTimeLeft: 0,
-            isRunning: false,
-            subject: '',
-            subjectId: null,
-            topicId: null,
-            syllabusId: null,
-            startTime: null,
-            precisionTimer: null,
-            sessionStartTime: null,
-            isInterruptedMode: false,
-            elapsedOffsetSeconds: 0,
-            sessionOwnerTabId: null,
-            isSessionLeader: true,
-            pauseStartTime: null,
-            totalPauseTime: 0,
-            pauseCount: 0,
-            lastActiveTime: 0,
-            activeFocusTime: 0,
-            sessionEvents: [],
-            resumeReasonRequired: false,
-            activeReflectionPrompt: null,
-            awayReflectionRequired: false,
-            lastUserInteractionAt: Date.now(),
-            currentState: 'idle' as SessionState,
-            lastEventTime: null,
-            reflectionRequired: false,
-            reflectionType: null,
-            reflectionStartTime: null,
-            pendingEnforcement: null,
-            lastAwayOrInterruptionAt: null,
-            lastEnforcementError: null,
-          };
-          set(resetDefaults);
-          setSafeTitle('GRYND - Build Relentless Consistency');
+          console.error('Failed to stop session:', error);
         }
       },
 
@@ -2622,6 +2683,13 @@ export const useTimerStore = create<TimerState>()(
             reflectionStartTime: null,
           };
           set(resetDefaults);
+          
+          // Enable post-session away detection after session completion
+          set({
+            postSessionAwayEnabled: true,
+            postSessionAwayStartTime: Date.now(),
+          });
+          
           setSafeTitle('GRYND - Build Relentless Consistency');
         }
       },
@@ -2741,6 +2809,74 @@ export const useTimerStore = create<TimerState>()(
           });
         }
       },
+
+      openStopModal: () => {
+        set({ stopModalOpen: true });
+      },
+
+      interrupt: () => {
+        try {
+          const state = get();
+          if (!state.currentSessionId) return;
+
+          if (state.isRunning) {
+            get().markInterruptedRunning();
+          }
+
+          void transitionAttention({
+            nextState: 'AWAY',
+            source: 'system',
+            metadata: {
+              sessionId: state.currentSessionId,
+              reason: 'interruption',
+              action: 'interrupt_button'
+            },
+          });
+
+          const snapshot = createCrossTabSnapshot(get());
+          writeActiveSessionSnapshot(snapshot);
+          if (snapshot) {
+            emitCrossTabEvent({
+              type: 'SYNC_ACTIVE_SESSION',
+              snapshot,
+              sourceTabId: tabId
+            });
+          }
+        } catch (error) {
+          console.error('Failed to handle interrupt:', error);
+        }
+      },
+
+      closeStopModal: () => {
+        set({ stopModalOpen: false });
+      },
+
+      handleStopModalDone: (mood?: number) => {
+        get().complete(undefined, undefined, [], false);
+        get().closeStopModal();
+      },
+
+      handleStopModalTakeBreak: (mood?: number) => {
+        get().complete(undefined, undefined, [], true);
+        get().closeStopModal();
+      },
+
+      closeReturnModal: () => set({ returnModalOpen: false, returnModalType: null, awayDuration: 0 }),
+
+      handleReturnModalSubmit: (action, mood) => {
+        get().closeReturnModal();
+        if (action === 'resume') {
+          get().resume();
+        } else if (action === 'stay_idle') {
+          get().transitionState('idle', { reason: 'stay_idle_after_return', mood });
+        } else if (action === 'interrupted') {
+          get().transitionState('away', { reason: 'interruption', mood });
+        } else if (action === 'distracted') {
+          get().transitionState('idle', { reason: 'distracted', mood });
+        } else if (action === 'still_studying') {
+          get().resume();
+        }
+      },
     }),
     {
       name: 'timer-storage',
@@ -2750,6 +2886,7 @@ export const useTimerStore = create<TimerState>()(
         interruptedTime: state.interruptedTime || 0,
         pendingEnforcement: state.pendingEnforcement || null,
         dailyEnforcementStats: state.dailyEnforcementStats,
+        stopModalOpen: false, // Don't persist modal state
       }),
       onRehydrateStorage: () => (state) => {
         try {
@@ -2930,7 +3067,7 @@ const applyRemoteSnapshot = (snapshot: CrossTabSessionSnapshot) => {
     currentState: snapshot.isInterruptedMode
       ? 'interrupted'
       : snapshot.isRunning
-        ? 'focus'
+        ? 'active'
         : 'paused',
     lastEventTime: snapshot.updatedAt,
     resumeReasonRequired: false,

@@ -172,7 +172,7 @@ const deriveVideoSessionFromEvents = (
     video_id: firstMetadata.videoId,
     video_title: firstMetadata.videoTitle || null,
     channel_id: firstMetadata.channelId || null,
-    channel_name: firstMetadata.channelName || null,
+    channel_title: firstMetadata.channelName || null,
     watched_seconds: maxWatchedFromEvents,
     total_duration_seconds: totalDurationSeconds,
     completion_percentage: buildCompletionPercentage(maxWatchedFromEvents, totalDurationSeconds),
@@ -268,7 +268,7 @@ const syncVideoSessionFromEvents = async (sessionId: string, userId: string) => 
 
   const { error: upsertError } = await supabase
     .from('video_sessions')
-    .upsert(sessionPayload as SessionRow, {
+    .upsert(sessionPayload as unknown as SessionRow, {
       onConflict: 'id',
       ignoreDuplicates: false,
     });

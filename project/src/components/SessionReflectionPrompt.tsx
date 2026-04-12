@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTimerStore } from '../store/timestore';
 
 const QUICK_INTERRUPTION_REASONS = [
-  'Quick call ambushed me',
-  'Got pulled into random chat',
-  'Phone scroll trap happened',
-  'Attention drifted off-track',
-  'Urgent side task jumped in',
+  'Phone call or message',
+  'Somebody called',
+  'House chores',
+  'Someone walked in',
+  'Loud noise nearby',
+  'Got distracted by something',
+  'Had to check something quickly',
 ];
 
 const countWords = (value: string): number =>
@@ -84,32 +86,33 @@ export const SessionReflectionPrompt: React.FC = () => {
       )
     : 0;
   const isAwayPrompt = activeReflectionPrompt?.type === 'away_reflection' || isReturnReflection || isEnforcementPrompt;
+  const isPostSessionAwayPrompt = activeReflectionPrompt?.type === 'post_session_away_reflection';
   const minWords = pendingEnforcement?.minWords ?? (isReturnReflection ? 50 : (activeReflectionPrompt?.minWords ?? 0));
   const isShortInterruptedPrompt =
     isEnforcementPrompt &&
     isInterruptedEnforcement &&
     interruptionDurationSeconds > 0 &&
-    interruptionDurationSeconds < 10 * 60;
+    interruptionDurationSeconds < 5 * 60; // Updated threshold
   const isLongInterruptedPrompt =
     isEnforcementPrompt &&
     isInterruptedEnforcement &&
-    interruptionDurationSeconds >= 10 * 60;
-  const effectiveMinWords = isLongInterruptedPrompt ? 50 : minWords;
+    interruptionDurationSeconds >= 5 * 60; // Updated threshold
+  const effectiveMinWords = isLongInterruptedPrompt || isPostSessionAwayPrompt ? 25 : minWords; // Updated word count
   const wordCount = useMemo(() => countWords(value), [value]);
-  const canSubmit = isAwayPrompt ? wordCount >= effectiveMinWords : value.trim().length > 0;
+  const canSubmit = (isAwayPrompt || isPostSessionAwayPrompt) ? wordCount >= effectiveMinWords : value.trim().length > 0;
 
   useEffect(() => {
     // Backfill persisted pending payloads that may not include duration/min words.
     if (
       pendingEnforcement &&
       pendingEnforcement.type === 'INTERRUPTED' &&
-      interruptionDurationSeconds >= 10 * 60 &&
-      pendingEnforcement.minWords < 50
+      interruptionDurationSeconds >= 5 * 60 &&
+      pendingEnforcement.minWords < 25
     ) {
       useTimerStore.setState({
         pendingEnforcement: {
           ...pendingEnforcement,
-          minWords: 50,
+          minWords: 25,
           durationSeconds: interruptionDurationSeconds,
         },
       });
@@ -126,6 +129,19 @@ export const SessionReflectionPrompt: React.FC = () => {
 
   const handleSubmit = () => {
     if (!canSubmit) {
+      return;
+    }
+
+    if (isPostSessionAwayPrompt) {
+      // For post-session away, just dismiss the prompt and reset state
+      useTimerStore.setState({
+        activeReflectionPrompt: null,
+        reflectionRequired: false,
+        reflectionType: null,
+        reflectionStartTime: null,
+        lastUserInteractionAt: Date.now(),
+      });
+      setValue('');
       return;
     }
 
@@ -150,7 +166,7 @@ export const SessionReflectionPrompt: React.FC = () => {
   };
 
   const handleCancel = () => {
-    if (isReturnReflection || isEnforcementPrompt) {
+    if (isReturnReflection || isEnforcementPrompt || isPostSessionAwayPrompt) {
       return;
     }
     setValue('');
@@ -163,69 +179,63 @@ export const SessionReflectionPrompt: React.FC = () => {
         <div className="border-b border-slate-700 p-6">
           <h2 className="text-xl font-semibold text-white">
             {isShortInterruptedPrompt
-              ? 'Short interruption. Pick your excuse.'
+              ? 'What interrupted you?'
               : isLongInterruptedPrompt
-                ? 'That was a long interruption.'
+                ? 'What interrupted you?'
+              : activeReflectionPrompt?.type === 'away_reflection'
+                ? 'Away Reason Required'
+              : isPostSessionAwayPrompt
+                ? 'Post-Session Reflection'
               : isAwayPrompt
                 ? 'Away Reason Required'
                 : 'Why did you pause?'}
           </h2>
           <p className="mt-2 text-sm text-slate-300">
-            {isReturnReflection
-              ? `You were ${reflectionType || 'away'} for ${awayMinutes} minutes. Add at least ${effectiveMinWords} words before continuing.`
+            {isPostSessionAwayPrompt
+              ? `You were away for ${awayMinutes} minutes after completing your session. What were you doing? Add at least ${effectiveMinWords} words.`
+              : isReturnReflection
+                ? `You were ${reflectionType || 'away'} for ${awayMinutes} minutes. Add at least ${effectiveMinWords} words before continuing.`
               : isEnforcementPrompt
-                ? isShortInterruptedPrompt
-                  ? 'Interrupted for under 10 minutes. Pick one and we move on.'
-                  : isLongInterruptedPrompt
-                    ? 'Interrupted for over 10 minutes. Write 50 words before we pretend this was smooth.'
-                    : isAwayEnforcement
-                      ? `Away detected. Add at least ${effectiveMinWords} words to resume.`
-                      : `You were marked as ${pendingEnforcement?.type === 'INTERRUPTED' ? 'interrupted' : 'away'}. Add at least ${effectiveMinWords} words to resume.`
-                : isAwayPrompt
-                  ? `You were inactive for more than 30 minutes. Add at least ${effectiveMinWords} words before continuing.`
-                  : 'Add a short reason before resuming so the pause is recorded in session events.'}
+                ? isInterruptedEnforcement
+                  ? isShortInterruptedPrompt
+                    ? 'What interrupted your focus? Pick one or write your own reason.'
+                    : `Interrupted for ${Math.round(interruptionDurationSeconds / 60)} minutes. What happened?`
+                  : isAwayEnforcement
+                    ? `Away detected for ${Math.round((pendingEnforcement?.durationSeconds || 0) / 60)} minutes. Why were you away?`
+                    : `You were marked as ${pendingEnforcement?.type === 'INTERRUPTED' ? 'interrupted' : 'away'}. Add at least ${effectiveMinWords} words to resume.`
+                : activeReflectionPrompt?.type === 'away_reflection'
+                  ? `You were away for ${Math.round((pendingEnforcement?.durationSeconds || awayMinutes * 60) / 60)} minutes. What pulled you away?`
+                  : isAwayPrompt
+                    ? `You were inactive for more than 30 minutes. Add at least ${effectiveMinWords} words before continuing.`
+                    : 'Add a short reason before resuming so the pause is recorded in session events.'}
           </p>
-        </div>
-
-        <div className="p-6">
-          {isShortInterruptedPrompt ? (
-            <div className="grid grid-cols-1 gap-2">
-              {QUICK_INTERRUPTION_REASONS.map((reason) => (
-                <button
-                  key={reason}
-                  onClick={() => {
-                    const requiredWords = Math.max(5, effectiveMinWords);
-                    const explanation = buildQuickInterruptionExplanation(reason, requiredWords);
-                    submitEnforcementExplanation(explanation, requiredWords * 300);
-                  }}
-                  className="rounded-xl border border-slate-600 bg-slate-700/60 px-4 py-3 text-left text-sm text-white transition-colors hover:border-slate-500 hover:bg-slate-700"
-                >
-                  {reason}
-                </button>
-              ))}
+          {isInterruptedEnforcement && (
+            <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+              <div className="font-semibold text-amber-200">Recorded interruption time</div>
+              <div className="mt-1 text-slate-300">
+                {interruptionDurationSeconds < 60
+                  ? `${interruptionDurationSeconds} second${interruptionDurationSeconds === 1 ? '' : 's'}`
+                  : `${Math.round(interruptionDurationSeconds / 60)} minute${Math.round(interruptionDurationSeconds / 60) === 1 ? '' : 's'}`}
+                {' '}of lost focus while you were away.
+              </div>
             </div>
-          ) : (
-            <textarea
-              value={value}
-              onChange={(event) => {
-                if (!typingStartedAt && event.target.value.trim().length > 0) {
-                  setTypingStartedAt(Date.now());
-                }
-                setValue(event.target.value);
-              }}
-              placeholder={
-                isAwayPrompt
-                  ? 'Describe what pulled you away, what changed, and how you want to restart this session.'
-                  : 'Example: Took a quick water break before coming back.'
-              }
-              className="min-h-[150px] w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
-            />
           )}
+
+          <textarea
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value);
+              if (!typingStartedAt) setTypingStartedAt(Date.now());
+            }}
+            rows={5}
+            className="min-h-[150px] w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+            placeholder="Write a short reason for the interruption or return."
+          />
 
           <div className="mt-3 text-sm text-slate-300">
             {isShortInterruptedPrompt
               ? 'Tap one option to resume.'
-              : isAwayPrompt
+              : (isAwayPrompt || isPostSessionAwayPrompt)
                 ? `${wordCount}/${effectiveMinWords} words`
                 : value.trim()
                   ? 'Reason ready to attach to the resume event.'
@@ -258,7 +268,7 @@ export const SessionReflectionPrompt: React.FC = () => {
                 disabled={!canSubmit}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isAwayPrompt ? 'Resume' : 'Resume Session'}
+                {isPostSessionAwayPrompt ? 'Continue' : isAwayPrompt ? 'Resume' : 'Resume Session'}
               </button>
             )}
           </div>

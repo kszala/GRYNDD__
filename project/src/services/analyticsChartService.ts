@@ -1,4 +1,7 @@
 import { supabase } from '@/supabaseClient';
+import type { AttentionBlockRow } from '@/services/behaviorEngine';
+import { mapBlock } from '@/services/attentionMapper';
+import { getAttentionBlocks, getClippedBlockInterval } from '@/services/attentionAnalyticsService';
 
 export interface DailyFocusTrend {
   date: string;
@@ -45,6 +48,20 @@ export interface VideoChannelData {
   totalWatchedSeconds: number;
   sessionCount: number;
   videoCount: number;
+}
+
+export interface AttentionStateData {
+  state: string;
+  totalMinutes: number;
+  percentage: number;
+}
+
+export interface GroupedAttentionStateData {
+  category: string;
+  totalMinutes: number;
+  percentage: number;
+  label: string;
+  color?: string;
 }
 
 // Daily focus trend with video hours overlay
@@ -379,6 +396,175 @@ export async function getChartDataVideoChannels(userId: string, limit: number = 
     return sorted;
   } catch (error) {
     console.error('Error fetching video channels:', error);
+    return [];
+  }
+}
+
+export async function getChartDataAttentionStates(userId: string, days: number = 7): Promise<AttentionStateData[]> {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+
+    const blocks = await getAttentionBlocks(userId, from, to);
+
+    const stateDurations = new Map<string, number>();
+    let totalDuration = 0;
+
+    for (const raw of blocks) {
+      const block = raw as AttentionBlockRow;
+      const clip = getClippedBlockInterval(block, from, to);
+      if (!clip) continue;
+
+      const minutes = clip.durationSec / 60;
+      const current = stateDurations.get(block.state) || 0;
+      stateDurations.set(block.state, current + minutes);
+      totalDuration += minutes;
+    }
+
+    const result: AttentionStateData[] = Array.from(stateDurations.entries())
+      .map(([state, minutes]) => ({
+        state,
+        totalMinutes: Math.round(minutes * 100) / 100,
+        percentage: totalDuration > 0 ? Math.round((minutes / totalDuration) * 100 * 100) / 100 : 0,
+      }))
+      .sort((a, b) => b.totalMinutes - a.totalMinutes);
+
+    return result;
+  } catch (error) {
+    console.error('Error fetching attention states:', error);
+    return [];
+  }
+}
+
+/**
+ * Grouped attention for charts: same overlap + clip + mapBlock semantics as Analytics.
+ */
+export async function getChartDataAttentionStatesGrouped(
+  userId: string,
+  days: number = 7
+): Promise<GroupedAttentionStateData[]> {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+
+    const blocks = await getAttentionBlocks(userId, from, to);
+
+    const groupedSeconds = {
+      focus: 0,
+      learning: 0,
+      light: 0,
+      break: 0,
+      distraction: 0,
+      interruption: 0,
+      paused: 0,
+    };
+
+    for (const raw of blocks) {
+      const block = raw as AttentionBlockRow;
+      const clip = getClippedBlockInterval(block, from, to);
+      if (!clip) continue;
+
+      const duration = clip.durationSec;
+
+      if (block.state === 'PAUSED') {
+        groupedSeconds.paused += duration;
+        continue;
+      }
+
+      const category = mapBlock(block);
+      switch (category) {
+        case 'focus':
+          groupedSeconds.focus += duration;
+          break;
+        case 'learning':
+          groupedSeconds.learning += duration;
+          break;
+        case 'light':
+          groupedSeconds.light += duration;
+          break;
+        case 'break':
+          groupedSeconds.break += duration;
+          break;
+        case 'distraction':
+          groupedSeconds.distraction += duration;
+          break;
+        case 'interruption':
+          groupedSeconds.interruption += duration;
+          break;
+      }
+    }
+
+    const totalDurationMin =
+      Object.values(groupedSeconds).reduce((a, b) => a + b, 0) / 60;
+
+    const rows: GroupedAttentionStateData[] = [
+      {
+        category: 'FOCUS',
+        totalMinutes: Math.round((groupedSeconds.focus / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round((groupedSeconds.focus / 60 / totalDurationMin) * 100 * 100) / 100
+            : 0,
+        label: 'Deep focus',
+        color: '#10b981',
+      },
+      {
+        category: 'LEARNING',
+        totalMinutes: Math.round((groupedSeconds.learning / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round((groupedSeconds.learning / 60 / totalDurationMin) * 100 * 100) / 100
+            : 0,
+        label: 'Learning (video engaged)',
+        color: '#6366f1',
+      },
+      {
+        category: 'LIGHT',
+        totalMinutes: Math.round(((groupedSeconds.light + groupedSeconds.break) / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round(
+                ((groupedSeconds.light + groupedSeconds.break) / 60 / totalDurationMin) * 100 * 100
+              ) / 100
+            : 0,
+        label: 'Light / breaks',
+        color: '#9ca3af',
+      },
+      {
+        category: 'DISTRACTION',
+        totalMinutes: Math.round((groupedSeconds.distraction / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round((groupedSeconds.distraction / 60 / totalDurationMin) * 100 * 100) / 100
+            : 0,
+        label: 'Distraction',
+        color: '#f59e0b',
+      },
+      {
+        category: 'INTERRUPTION',
+        totalMinutes: Math.round((groupedSeconds.interruption / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round((groupedSeconds.interruption / 60 / totalDurationMin) * 100 * 100) / 100
+            : 0,
+        label: 'Interruption',
+        color: '#a855f7',
+      },
+      {
+        category: 'PAUSE',
+        totalMinutes: Math.round((groupedSeconds.paused / 60) * 100) / 100,
+        percentage:
+          totalDurationMin > 0
+            ? Math.round((groupedSeconds.paused / 60 / totalDurationMin) * 100 * 100) / 100
+            : 0,
+        label: 'Paused',
+        color: '#FFC107',
+      },
+    ];
+
+    return rows.filter((r) => r.totalMinutes > 0).sort((a, b) => b.totalMinutes - a.totalMinutes);
+  } catch (error) {
+    console.error('Error fetching grouped attention states:', error);
     return [];
   }
 }

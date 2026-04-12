@@ -23,6 +23,7 @@ export const PersistentTimer: React.FC<PersistentTimerProps> = ({ isMinimized = 
     timeLeft,
     isRunning,
     currentSessionId,
+    currentState,
     sessionType,
     subject,
     startTime,
@@ -35,6 +36,7 @@ export const PersistentTimer: React.FC<PersistentTimerProps> = ({ isMinimized = 
     lastEnforcementFeedback,
     complete,
     endBreak,
+    stop,
   } = useTimerStore();
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
@@ -89,6 +91,7 @@ export const PersistentTimer: React.FC<PersistentTimerProps> = ({ isMinimized = 
   }
 
   const isBreakMode = sessionType === 'break';
+  const isInterruptedRunning = currentState === 'interrupted_running';
   const displayTime = preciseTimeLeft || timeLeft;
   const toggleTimer = () => {
     isRunning ? pause() : requestResume();
@@ -100,12 +103,36 @@ export const PersistentTimer: React.FC<PersistentTimerProps> = ({ isMinimized = 
         <NotificationBell />
         <div className="bg-gray-800/95 backdrop-blur-sm border border-gray-700 rounded-2xl p-5 shadow-2xl min-w-[300px]">
           <div className="flex items-center gap-2 mb-3">
-            {isBreakMode ? <Coffee className="w-5 h-5 text-orange-400" /> : <Timer className="w-5 h-5 text-purple-400" />}
-            <span className="text-white font-semibold">{isBreakMode ? 'Break Mode' : 'Focus Timer'}</span>
+            {isBreakMode ? (
+              <Coffee className="w-5 h-5 text-orange-400" />
+            ) : isInterruptedRunning ? (
+              <AlertTriangle className="w-5 h-5 text-amber-400" />
+            ) : (
+              <Timer className="w-5 h-5 text-purple-400" />
+            )}
+            <span className="text-white font-semibold">
+              {isBreakMode ? 'Break Mode' : isInterruptedRunning ? 'Interrupted' : 'Focus Timer'}
+            </span>
           </div>
 
           <div className="text-3xl font-mono font-bold text-white mb-2 tracking-tight">{formatPreciseTime(displayTime)}</div>
           {!isBreakMode && <div className="text-purple-300 text-sm mb-4">{subject || 'Focus Session'}</div>}
+          {isInterruptedRunning && (
+            <div className="mb-4 rounded-2xl border border-orange-400/20 bg-orange-500/10 p-4 text-orange-100 shadow-lg">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">Interrupted</p>
+                  <p className="text-xs text-orange-200">Timer is paused. Resume when you’re ready to return and log what happened.</p>
+                </div>
+                <button
+                  onClick={requestResume}
+                  className="rounded-full border border-orange-300 bg-orange-500/10 px-3 py-1 text-sm font-semibold text-orange-100 transition hover:bg-orange-500/20"
+                >
+                  Return
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             {isBreakMode ? (
@@ -135,7 +162,7 @@ export const PersistentTimer: React.FC<PersistentTimerProps> = ({ isMinimized = 
                   </button>
                 )}
                 <button
-                  onClick={() => setShowCompleteModal(true)}
+                  onClick={() => stop()}
                   className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
                   title="End Session"
                 >

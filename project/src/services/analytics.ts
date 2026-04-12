@@ -49,7 +49,7 @@ export async function getSessionAnalytics(userId: string, days = 7): Promise<Ses
 
     const rows = await fetchSessionEvents(userId, since.toISOString());
     const sessions = aggregateSessionsFromEvents(rows);
-    const byDay: Record<string, SessionAnalyticsPoint> = {};
+    const byDay: Record<string, { date: string; day: string; focusSeconds: number; interruptedSeconds: number }> = {};
 
     for (let offset = 0; offset < days; offset += 1) {
       const current = shiftLocalDays(since, offset);
@@ -57,8 +57,8 @@ export async function getSessionAnalytics(userId: string, days = 7): Promise<Ses
       byDay[key] = {
         date: key,
         day: current.toLocaleDateString('en-IN', { weekday: 'short' }),
-        focusMinutes: 0,
-        interruptedMinutes: 0,
+        focusSeconds: 0,
+        interruptedSeconds: 0,
       };
     }
 
@@ -66,13 +66,18 @@ export async function getSessionAnalytics(userId: string, days = 7): Promise<Ses
       const key = toLocalDateKey(new Date(session.startedAt));
       if (!byDay[key]) return;
 
-      byDay[key].focusMinutes += Math.round(session.focusSeconds / 60);
+      byDay[key].focusSeconds += session.focusSeconds;
       if (session.completionStatus !== 'completed') {
-        byDay[key].interruptedMinutes += Math.round(session.inactiveSeconds / 60);
+        byDay[key].interruptedSeconds += session.inactiveSeconds;
       }
     });
 
-    return Object.values(byDay);
+    return Object.values(byDay).map((item) => ({
+      date: item.date,
+      day: item.day,
+      focusMinutes: Math.round(item.focusSeconds / 60),
+      interruptedMinutes: Math.round(item.interruptedSeconds / 60),
+    }));
   } catch {
     return [];
   }

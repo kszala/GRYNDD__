@@ -154,7 +154,6 @@ export const usePomodoro = () => {
         .from('subjects')
         .select('*')
         .eq('user_id', user.id)
-        .eq('is_active', true)
         .order('name');
 
       if (error) {
@@ -377,7 +376,7 @@ export const usePomodoro = () => {
   }, [startTimerSession]);
 
   // Enhanced stop session with analytics
-  const stopSession = useCallback((reason?: string, details?: string, wasEndedEarly?: boolean) => {
+  const stopSession = useCallback((reason?: string, details?: string, wasEndedEarly: boolean = true) => {
     try {
       // Update active focus time before stopping
       if (updateActiveFocusTime) {

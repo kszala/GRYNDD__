@@ -42,11 +42,15 @@ const sumDuration = (items: GryndTubeTopicPlaylistItem[]) =>
 const getTopicName = async (topicId: string): Promise<string> => {
   const { data } = await supabase
     .from('syllabus_topics')
-    .select('name')
+    .select('chapter, topic')
     .eq('id', topicId)
     .maybeSingle();
 
-  return data?.name || DEFAULT_TOPIC_NAME;
+  if (data?.chapter && data?.topic) {
+    return `${data.chapter} - ${data.topic}`;
+  }
+
+  return DEFAULT_TOPIC_NAME;
 };
 
 const getOrCreatePlaylistRow = async (userId: string, topicId: string): Promise<PlaylistRow> => {

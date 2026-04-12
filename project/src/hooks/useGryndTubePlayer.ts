@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { analyticsService } from '../services/analyticsService';
+import { transitionAttention } from '../lib/attentionEngine';
+import { useTimerStore } from '../store/timestore';
 import type { GryndTubeTopicPlaylistItem, VideoSessionMetrics } from '../types/gryndtube';
 
 declare global {
@@ -237,6 +239,13 @@ export const useGryndTubePlayer = ({
 
                 const hadSession = Boolean(sessionIdRef.current);
                 await startSession();
+                void transitionAttention({
+                  nextState: 'VIDEO_ENGAGED',
+                  source: 'video',
+                  metadata: {
+                    sessionId: useTimerStore.getState().currentSessionId,
+                  },
+                });
                 if (hadSession) {
                   await logPlaybackEvent('play');
                 }
@@ -251,6 +260,13 @@ export const useGryndTubePlayer = ({
                   pauseCount: metricsRef.current.pauseCount + 1,
                 };
                 setMetrics(metricsRef.current);
+                void transitionAttention({
+                  nextState: 'VIDEO_PASSIVE',
+                  source: 'video',
+                  metadata: {
+                    sessionId: useTimerStore.getState().currentSessionId,
+                  },
+                });
                 await logPlaybackEvent('pause');
                 return;
               }
@@ -258,6 +274,13 @@ export const useGryndTubePlayer = ({
               if (event.data === YTApi.PlayerState.ENDED) {
                 setIsPlaying(false);
                 await endSession();
+                void transitionAttention({
+                  nextState: 'IDLE',
+                  source: 'video',
+                  metadata: {
+                    sessionId: useTimerStore.getState().currentSessionId,
+                  },
+                });
                 return;
               }
 

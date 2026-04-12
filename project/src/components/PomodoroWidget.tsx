@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Pause, Square, AlertTriangle, Maximize, X, Clock, Timer as TimerIcon } from 'lucide-react';
+import { Play, Pause, Square, AlertTriangle, Maximize, X, Clock, Timer as TimerIcon, AlertCircle } from 'lucide-react';
 import { usePomodoro } from '../hooks/usePomodoro';
 import SessionCompleteModal from './SessionCompleteModal';
 import { BreakPromptModal } from './BreakPromptModal';
@@ -54,6 +54,7 @@ export const PomodoroWidget: React.FC = () => {
     showBreakPrompt, lastCompletedSession,
     startBreakTimer, dismissBreakPrompt,
     isInterruptedMode, interruptedTime,
+    markInterruptedRunning, interrupt,
   } = useTimerStore();
 
   const [selectedSubject,   setSelectedSubject]   = useState('');
@@ -109,11 +110,14 @@ export const PomodoroWidget: React.FC = () => {
 
   const handleStop = () => {
     if (currentSession && (safeTimeLeft > 0 || isInterruptedMode)) {
-      setSessionEndedEarly(true);
-      setShowCompleteModal(true);
+      stopSession();
     } else {
       resetTimer();
     }
+  };
+
+  const handleInterrupt = () => {
+    interrupt();
   };
 
   useEffect(() => {
@@ -132,6 +136,9 @@ export const PomodoroWidget: React.FC = () => {
   const displayTime = isInterruptedMode
     ? formatElapsedTime(totalElapsed)
     : formatTime(safeTimeLeft);
+
+  const displayColor = isInterruptedMode ? '#fb923c' : 'rgba(255,255,255,.94)';
+  const subtitleColor = isInterruptedMode ? '#fbbf24' : 'rgba(255,255,255,.42)';
 
   const modeLabel = isInterruptedMode
     ? 'INTERRUPTED'
@@ -190,6 +197,17 @@ export const PomodoroWidget: React.FC = () => {
             >
               {isRunning ? <Pause size={18} /> : <Play size={18} style={{ marginLeft: 2 }} />}
             </button>
+            {currentSession && !isInterruptedMode && (
+              <button
+                onClick={handleInterrupt}
+                style={{ ...iconButtonStyle(false), border: '1px solid rgba(251,146,60,.35)', color: 'rgba(251,146,60,.95)' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(251,146,60,.1)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                title="Interrupt"
+              >
+                <AlertCircle size={18} />
+              </button>
+            )}
             {(currentSession || safeTimeLeft > 0) && (
               <button
                 onClick={handleStop}
@@ -205,7 +223,7 @@ export const PomodoroWidget: React.FC = () => {
         <SessionCompleteModal
           isOpen={showCompleteModal}
           onClose={() => { setShowCompleteModal(false); setSessionEndedEarly(false); resetTimer(); }}
-          onComplete={() => { stopSession(undefined, undefined, false); setShowCompleteModal(false); setSessionEndedEarly(false); }}
+          onComplete={() => { stopSession(undefined, undefined, sessionEndedEarly); setShowCompleteModal(false); setSessionEndedEarly(false); }}
           onIncomplete={(r, d) => { stopSession(r, d, sessionEndedEarly); setShowCompleteModal(false); setSessionEndedEarly(false); }}
           {...modalProps}
         />
@@ -336,18 +354,18 @@ export const PomodoroWidget: React.FC = () => {
             fontSize:           'clamp(5.8rem, 10vw, 7.2rem)',
             lineHeight:         1,
             letterSpacing:      '-0.06em',
-            color:              'rgba(255,255,255,.94)',
+            color:              displayColor,
             fontVariantNumeric: 'tabular-nums',
           }}>
             {displayTime}
           </p>
 
           <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '0.22em', color: 'rgba(255,255,255,.32)' }}>
+            <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '0.22em', color: subtitleColor }}>
               {modeLabel}
             </span>
             <span style={{ width: 3, height: 3, borderRadius: '999px', background: 'rgba(255,255,255,.22)' }} />
-            <span style={{ fontFamily: UI, fontSize: 12, color: 'rgba(255,255,255,.42)' }}>
+            <span style={{ fontFamily: UI, fontSize: 12, color: subtitleColor }}>
               {subjectLabel}
             </span>
           </div>
@@ -368,6 +386,18 @@ export const PomodoroWidget: React.FC = () => {
             }
           </button>
 
+          {currentSession && !isInterruptedMode && (
+            <button
+              onClick={handleInterrupt}
+              style={{ ...iconButtonStyle(false), border: '1px solid rgba(251,146,60,.35)', color: 'rgba(251,146,60,.95)' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(251,146,60,.1)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              title="Interrupt"
+            >
+              <AlertCircle size={16} />
+            </button>
+          )}
+
           {(currentSession || safeTimeLeft > 0) && (
             <button
               onClick={handleStop}
@@ -386,7 +416,7 @@ export const PomodoroWidget: React.FC = () => {
       <SessionCompleteModal
         isOpen={showCompleteModal}
         onClose={() => { setShowCompleteModal(false); setSessionEndedEarly(false); resetTimer(); }}
-        onComplete={() => { stopSession(undefined, undefined, false); setShowCompleteModal(false); setSessionEndedEarly(false); }}
+          onComplete={() => { stopSession(undefined, undefined, sessionEndedEarly); setShowCompleteModal(false); setSessionEndedEarly(false); }}
         onIncomplete={(r, d) => { stopSession(r, d, sessionEndedEarly); setShowCompleteModal(false); setSessionEndedEarly(false); }}
         {...modalProps}
       />

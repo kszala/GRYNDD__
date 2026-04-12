@@ -1,0 +1,19 @@
+﻿
+> vite-react-typescript-starter@0.0.0 build
+> tsc && vite build
+
+[36mvite v5.4.19 [32mbuilding for production...[36m[39m
+transforming...
+[32mΓ£ô[39m 2253 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                    [39m[1m[2m  2.56 kB[22m[1m[22m[2m Γöé gzip:   0.97 kB[22m
+[2mdist/[22m[35massets/index-D7QQ5kuQ.css     [39m[1m[2m 50.78 kB[22m[1m[22m[2m Γöé gzip:   9.21 kB[22m
+[2mdist/[22m[36massets/state-BzEuOh2I.js      [39m[1m[2m  0.60 kB[22m[1m[22m[2m Γöé gzip:   0.38 kB[22m
+[2mdist/[22m[36massets/Analytics-CWUSSQcZ.js  [39m[1m[2m 27.51 kB[22m[1m[22m[2m Γöé gzip:   7.14 kB[22m
+[2mdist/[22m[36massets/router-DhKPWpGh.js     [39m[1m[2m 34.57 kB[22m[1m[22m[2m Γöé gzip:  12.74 kB[22m
+[2mdist/[22m[36massets/supabase-DCd3MqJe.js   [39m[1m[2m124.50 kB[22m[1m[22m[2m Γöé gzip:  34.12 kB[22m
+[2mdist/[22m[36massets/react-B-wuX89F.js      [39m[1m[2m141.46 kB[22m[1m[22m[2m Γöé gzip:  45.42 kB[22m
+[2mdist/[22m[36massets/index-CQZisG1_.js      [39m[1m[2m226.08 kB[22m[1m[22m[2m Γöé gzip:  59.36 kB[22m
+[2mdist/[22m[36massets/ui-BGHa-e0j.js         [39m[1m[2m351.92 kB[22m[1m[22m[2m Γöé gzip: 102.55 kB[22m
+[32mΓ£ô built in 33.03s[39m

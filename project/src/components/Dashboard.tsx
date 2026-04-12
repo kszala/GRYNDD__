@@ -7,6 +7,18 @@ import { TrendingUp, Target, Brain, ArrowUpRight, Activity } from 'lucide-react'
 import { getPeakFocusWindow } from '../services/behaviorTracking';
 import { supabase } from '../supabaseClient';
 import { addTask, GryndFlowTask } from '../services/gryndflowService';
+import {
+  getAttentionBlocks,
+  getAttentionSummary,
+  type AttentionSummary,
+  formatDuration as formatAttentionDuration,
+} from '../services/attentionAnalyticsService';
+import {
+  analyzeBehavior,
+  medianSeconds,
+  getTopDistractionReason,
+  getBestFocusSessionSecondsToday,
+} from '../services/behaviorEngine';
 
 /*
  * Font stacks — no Google Fonts import needed.
@@ -14,17 +26,26 @@ import { addTask, GryndFlowTask } from '../services/gryndflowService';
  * They are always available, always render crisply, never feel "AI".
  */
 const MONO = `'SF Mono', 'Fira Code', 'Consolas', 'Menlo', monospace`;
-const UI   = `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`;
+const UI = `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`;
 
 export const Dashboard: React.FC = () => {
-  const [mounted,       setMounted]       = useState(false);
-  const [timeOfDay,     setTimeOfDay]     = useState('Morning');
-  const [currentTime,   setCurrentTime]   = useState(new Date());
-  const [peakFocus,     setPeakFocus]     = useState<any>(null);
-  const [userName,      setUserName]      = useState('User');
-  const [nlpInput,      setNlpInput]      = useState('');
-  const [recentTask,    setRecentTask]    = useState<GryndFlowTask | null>(null);
-  const [isAddingTask,  setIsAddingTask]  = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [timeOfDay, setTimeOfDay] = useState('Morning');
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [peakFocus, setPeakFocus] = useState<any>(null);
+  const [userName, setUserName] = useState('User');
+  const [userId, setUserId] = useState<string | null>(null);
+  const [nlpInput, setNlpInput] = useState('');
+  const [recentTask, setRecentTask] = useState<GryndFlowTask | null>(null);
+  const [isAddingTask, setIsAddingTask] = useState(false);
+
+  const [behaviorLoading, setBehaviorLoading] = useState(true);
+  const [avgFocusMinutes, setAvgFocusMinutes] = useState<number | null>(null);
+  const [medianDropMinutes, setMedianDropMinutes] = useState<number | null>(null);
+  const [topDistraction, setTopDistraction] = useState<string | null>(null);
+  const [bestFocusTodaySec, setBestFocusTodaySec] = useState<number | null>(null);
+  const [todaySummary, setTodaySummary] = useState<AttentionSummary | null>(null);
+  const [todaySessionCount, setTodaySessionCount] = useState<number | null>(null);
 
   const navigate = useNavigate();
 
@@ -43,7 +64,10 @@ export const Dashboard: React.FC = () => {
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user?.id) setUserId(user.id);
       if (user?.user_metadata?.full_name) setUserName(user.user_metadata.full_name.split(' ')[0]);
       else if (user?.email) setUserName(user.email.split('@')[0]);
     })();
@@ -52,22 +76,93 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         setPeakFocus(await getPeakFocusWindow(user?.id ?? 'user-placeholder'));
       } catch {}
     })();
   }, []);
 
-  const sessions       = storage.getSessions();
-  const todaySessions  = sessions.filter(s => isToday(s.startTime));
-  const todayFocusTime = todaySessions
-    .filter(s => s.type === 'focus' && s.completed)
-    .reduce((a, s) => a + s.duration, 0);
+  useEffect(() => {
+    if (!userId) {
+      setBehaviorLoading(false);
+      return;
+    }
 
-  const focusScore  = Math.min(Math.round((todayFocusTime / 3600) * 100 + 12), 100) || 12;
+    (async () => {
+      setBehaviorLoading(true);
+      try {
+        const to = new Date();
+        const from14 = new Date(to.getTime() - 14 * 24 * 60 * 60 * 1000);
+        const blocks14 = await getAttentionBlocks(userId, from14, to);
+        const analysis = analyzeBehavior(blocks14);
+
+        if (analysis.avgFocusDuration != null) {
+          setAvgFocusMinutes(Math.round(analysis.avgFocusDuration / 60));
+        } else {
+          setAvgFocusMinutes(null);
+        }
+
+        const med = medianSeconds(analysis.dropPoints);
+        setMedianDropMinutes(med != null ? Math.round(med / 60) : null);
+
+        setTopDistraction(getTopDistractionReason(analysis.distractionTriggers));
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const blocksToday = await getAttentionBlocks(userId, startOfDay, to);
+        setBestFocusTodaySec(getBestFocusSessionSecondsToday(blocksToday));
+      } catch {
+        setAvgFocusMinutes(null);
+        setMedianDropMinutes(null);
+        setTopDistraction(null);
+        setBestFocusTodaySec(null);
+      } finally {
+        setBehaviorLoading(false);
+      }
+    })();
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) {
+      setTodaySummary(null);
+      setTodaySessionCount(null);
+      return;
+    }
+
+    (async () => {
+      try {
+        const now = new Date();
+        const startOfDay = new Date(now);
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const [summary, blocksToday] = await Promise.all([
+          getAttentionSummary(userId, startOfDay, now),
+          getAttentionBlocks(userId, startOfDay, now),
+        ]);
+
+        setTodaySummary(summary);
+        setTodaySessionCount(blocksToday ? new Set(blocksToday.map((block: any) => block.session_id)).size : 0);
+      } catch {
+        setTodaySummary(null);
+        setTodaySessionCount(null);
+      }
+    })();
+  }, [userId]);
+
+  const sessions = storage.getSessions();
+  const todaySessions = sessions.filter((s) => isToday(s.startTime));
+  const todayFocusTime = todaySummary?.focus ?? 0;
+  const todayIdleTime = todaySummary?.idle ?? 0;
+  const todayDistractionTime = todaySummary?.distraction ?? 0;
+  const todayInterruptionTime = todaySummary?.interruption ?? 0;
+  const displayedTodaySessionCount = todaySessionCount !== null ? todaySessionCount : todaySessions.length;
+
+  const focusScore = Math.min(Math.round((todayFocusTime / 3600) * 100 + 12), 100) || 12;
   const consistency = 82;
-  const delta       = todayFocusTime / 3600 - 4;
-  const peakLabel   = peakFocus?.peakHourLabel ?? '9:00 AM';
+  const delta = todayFocusTime / 3600 - 4;
+  const peakLabel = peakFocus?.peakHourLabel ?? '9:00 AM';
 
   const handleAddNLPTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,88 +174,154 @@ export const Dashboard: React.FC = () => {
       const [, text, s, sa, en, ea] = m;
       const sh = sa.toLowerCase() === 'pm' ? +s + 12 : +s;
       const eh = ea.toLowerCase() === 'pm' ? +en + 12 : +en;
-      data = { text: text.trim(), priority: 'normal', completed: false, category: 'learning', time: `${String(sh).padStart(2,'0')}:00`, endTime: `${String(eh).padStart(2,'0')}:00`, duration: (eh-sh)*60, isTimeBlock: true, createdAt: Date.now() };
+      data = {
+        text: text.trim(),
+        priority: 'normal',
+        completed: false,
+        category: 'learning',
+        time: `${String(sh).padStart(2, '0')}:00`,
+        endTime: `${String(eh).padStart(2, '0')}:00`,
+        duration: (eh - sh) * 60,
+        isTimeBlock: true,
+        createdAt: Date.now(),
+      };
     } else {
-      data = { text: nlpInput, priority: 'normal', completed: false, category: 'work', time: null, endTime: null, duration: 30, isTimeBlock: false, createdAt: Date.now() };
+      data = {
+        text: nlpInput,
+        priority: 'normal',
+        completed: false,
+        category: 'work',
+        time: null,
+        endTime: null,
+        duration: 30,
+        isTimeBlock: false,
+        createdAt: Date.now(),
+      };
     }
     try {
       const added = await addTask(data);
-      if (added) { setRecentTask(added); setNlpInput(''); }
+      if (added) {
+        setRecentTask(added);
+        setNlpInput('');
+      }
     } catch {}
-    finally { setIsAddingTask(false); }
+    finally {
+      setIsAddingTask(false);
+    }
   };
 
   /* ── style tokens ─────────────────────────────────────────────── */
   const fadeIn = (delay = 0): React.CSSProperties => ({
-    opacity:    mounted ? 1 : 0,
-    transform:  mounted ? 'none' : 'translateY(6px)',
+    opacity: mounted ? 1 : 0,
+    transform: mounted ? 'none' : 'translateY(6px)',
     transition: `opacity .35s ${delay}s ease, transform .35s ${delay}s ease`,
   });
 
   /* Card: no left border, no glow — hover is a subtle bg lift only */
   const card: React.CSSProperties = {
-    background:   '#0d0e13',
-    border:       '1px solid rgba(255,255,255,.07)',
+    background: '#0d0e13',
+    border: '1px solid rgba(255,255,255,.07)',
     borderRadius: '8px',
   };
 
   /* Metric card label — readable at any brightness */
   const metricLabel: React.CSSProperties = {
-    fontFamily:    UI,
-    fontSize:      '10px',
-    fontWeight:    600,
+    fontFamily: UI,
+    fontSize: '10px',
+    fontWeight: 600,
     letterSpacing: '1.4px',
     textTransform: 'uppercase',
-    color:         'rgba(255,255,255,.45)',
+    color: 'rgba(255,255,255,.45)',
   };
 
   const metricSub: React.CSSProperties = {
     fontFamily: UI,
-    fontSize:   '10px',
+    fontSize: '10px',
     lineHeight: 1.4,
-    color:      'rgba(255,255,255,.35)',
-    marginTop:  '3px',
+    color: 'rgba(255,255,255,.35)',
+    marginTop: '3px',
   };
 
   const sectionLabel: React.CSSProperties = {
-    fontFamily:    UI,
-    fontSize:      '10px',
-    fontWeight:    600,
+    fontFamily: UI,
+    fontSize: '10px',
+    fontWeight: 600,
     letterSpacing: '1.4px',
     textTransform: 'uppercase',
-    color:         'rgba(255,255,255,.35)',
+    color: 'rgba(255,255,255,.35)',
+  };
+
+  const insightLine: React.CSSProperties = {
+    fontFamily: UI,
+    fontSize: '11px',
+    fontWeight: 500,
+    lineHeight: 1.35,
+    margin: 0,
+    color: 'rgba(255,255,255,.82)',
   };
 
   return (
-    <div style={{
-      padding:       '18px 20px 12px',
-      height:        '100vh',
-      background:    '#060608',
-      color:         '#fff',
-      display:       'flex',
-      flexDirection: 'column',
-      gap:           '10px',
-      overflow:      'hidden',
-      fontFamily:    UI,
-      userSelect:    'none',
-      boxSizing:     'border-box',
-    }}>
-
+    <div
+      style={{
+        padding: '18px 20px 12px',
+        height: '100vh',
+        background: '#060608',
+        color: '#fff',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        overflow: 'hidden',
+        fontFamily: UI,
+        userSelect: 'none',
+        boxSizing: 'border-box',
+      }}
+    >
       {/* ── HEADER ──────────────────────────────────────────────────── */}
-      <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0, ...fadeIn(0) }}>
-        {/* Greeting */}
+      <header
+        style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0, ...fadeIn(0) }}
+      >
         <div>
-          <h1 style={{ fontFamily: UI, fontSize: '2.5rem', fontWeight: 700, lineHeight: 1.06, letterSpacing: '-0.8px', margin: 0, color: '#fff' }}>
+          <h1
+            style={{
+              fontFamily: UI,
+              fontSize: '2.5rem',
+              fontWeight: 700,
+              lineHeight: 1.06,
+              letterSpacing: '-0.8px',
+              margin: 0,
+              color: '#fff',
+            }}
+          >
             Good {timeOfDay},
           </h1>
-          <h2 style={{ fontFamily: UI, fontSize: '2.5rem', fontWeight: 700, lineHeight: 1.06, letterSpacing: '-0.8px', margin: 0, color: 'rgba(255,255,255,.22)' }}>
+          <h2
+            style={{
+              fontFamily: UI,
+              fontSize: '2.5rem',
+              fontWeight: 700,
+              lineHeight: 1.06,
+              letterSpacing: '-0.8px',
+              margin: 0,
+              color: 'rgba(255,255,255,.22)',
+            }}
+          >
             {userName}.
           </h2>
         </div>
 
-        {/* Clock */}
         <div style={{ textAlign: 'right' }}>
-          <p style={{ fontFamily: MONO, fontSize: '2.9rem', fontWeight: 700, lineHeight: 1, letterSpacing: '-1px', margin: 0, fontVariantNumeric: 'tabular-nums', color: '#fff' }}>
+          <p
+            style={{
+              fontFamily: MONO,
+              fontSize: '2.9rem',
+              fontWeight: 700,
+              lineHeight: 1,
+              letterSpacing: '-1px',
+              margin: 0,
+              fontVariantNumeric: 'tabular-nums',
+              color: '#fff',
+            }}
+          >
             {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
           <p style={{ fontFamily: UI, fontSize: '11px', color: 'rgba(255,255,255,.3)', marginTop: '5px', margin: '5px 0 0' }}>
@@ -169,111 +330,130 @@ export const Dashboard: React.FC = () => {
         </div>
       </header>
 
-      {/* ── FOUR METRIC CARDS ───────────────────────────────────────── */}
-      {/*
-       * No left-border accent. No glow.
-       * Hover = background lightens by ~4% — that's it.
-       * Icon is the only colour per card, dimmed to .45 opacity.
-       */}
-      <div style={{
-        display:             'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap:                 '8px',
-        flexShrink:          0,
-        ...fadeIn(0.07),
-      }}>
-
-        {/* Focus Score */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: '8px',
+          flexShrink: 0,
+          ...fadeIn(0.07),
+        }}
+      >
         <div
           style={{ ...card, padding: '11px 13px', transition: 'background .2s' }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-          onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <span style={metricLabel}>Focus Score</span>
             <Target size={12} style={{ color: 'rgba(255,255,255,.35)', flexShrink: 0 }} />
           </div>
-          <p style={{ fontFamily: MONO, fontSize: '2.1rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{focusScore}</p>
+          <p style={{ fontFamily: MONO, fontSize: '2.1rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>
+            {focusScore}
+          </p>
           <p style={metricSub}>Session intensity.</p>
         </div>
 
-        {/* Consistency */}
         <div
           style={{ ...card, padding: '11px 13px', transition: 'background .2s' }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-          onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <span style={metricLabel}>Consistency</span>
             <TrendingUp size={12} style={{ color: 'rgba(255,255,255,.35)', flexShrink: 0 }} />
           </div>
           <p style={{ fontFamily: MONO, fontSize: '2.1rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>
-            {consistency}<span style={{ fontSize: '1rem', fontWeight: 400, color: 'rgba(255,255,255,.4)' }}>%</span>
+            {consistency}
+            <span style={{ fontSize: '1rem', fontWeight: 400, color: 'rgba(255,255,255,.4)' }}>%</span>
           </p>
           <p style={metricSub}>7-day streak.</p>
         </div>
 
-        {/* Ideal vs Actual */}
         <div
           style={{ ...card, padding: '11px 13px', transition: 'background .2s' }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-          onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <span style={metricLabel}>Ideal vs Actual</span>
             <Activity size={12} style={{ color: 'rgba(255,255,255,.35)', flexShrink: 0 }} />
           </div>
           <p style={{ fontFamily: MONO, fontSize: '2.1rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>
-            {delta >= 0 ? '+' : ''}{delta.toFixed(1)}<span style={{ fontSize: '1rem', fontWeight: 400, color: 'rgba(255,255,255,.3)' }}>h</span>
+            {delta >= 0 ? '+' : ''}
+            {delta.toFixed(1)}
+            <span style={{ fontSize: '1rem', fontWeight: 400, color: 'rgba(255,255,255,.3)' }}>h</span>
           </p>
           <p style={metricSub}>From planned deep work.</p>
         </div>
 
-        {/* Insights */}
         <div
           style={{ ...card, padding: '11px 13px', transition: 'background .2s' }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-          onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
             <span style={metricLabel}>Insights</span>
             <Brain size={12} style={{ color: 'rgba(255,255,255,.35)', flexShrink: 0 }} />
           </div>
-          <p style={{ fontFamily: UI, fontSize: '1.1rem', fontWeight: 600, lineHeight: 1.25, margin: 0 }}>
-            Peak at {peakLabel}
-          </p>
-          <p style={metricSub}>Sharpest window today.</p>
+          {behaviorLoading ? (
+            <p style={{ ...insightLine, color: 'rgba(255,255,255,.4)' }}>Loading patterns…</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <p style={insightLine}>
+                {avgFocusMinutes != null
+                  ? `You usually focus for ~${avgFocusMinutes} min`
+                  : 'Not enough focus data yet for an average.'}
+              </p>
+              {medianDropMinutes != null && (
+                <p style={insightLine}>You usually lose focus after ~{medianDropMinutes} min</p>
+              )}
+              <p style={insightLine}>
+                {topDistraction != null
+                  ? `Most distractions come from ${topDistraction}`
+                  : 'No labeled away reasons yet.'}
+              </p>
+              {bestFocusTodaySec != null && bestFocusTodaySec > 0 && (
+                <p style={insightLine}>Best focus stretch today: {formatAttentionDuration(bestFocusTodaySec)}</p>
+              )}
+              <p style={{ ...metricSub, marginTop: '6px' }}>Peak at {peakLabel}</p>
+            </div>
+          )}
         </div>
-
       </div>
 
-      {/* ── MAIN CONTENT ────────────────────────────────────────────── */}
-      <div style={{
-        flex:                1,
-        minHeight:           0,
-        display:             'grid',
-        gridTemplateColumns: '1fr 360px',
-        gap:                 '8px',
-        ...fadeIn(0.14),
-      }}>
-
-        {/* LEFT: timer — transparent, separated by a hairline rule */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: '1fr 360px',
+          gap: '8px',
+          ...fadeIn(0.14),
+        }}
+      >
         <div style={{ height: '100%', overflow: 'hidden', paddingRight: '8px', borderRight: '1px solid rgba(255,255,255,.05)' }}>
           <PomodoroWidget />
         </div>
 
-        {/* RIGHT: two stacked data cards */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', height: '100%' }}>
-
-          {/* Analytics Snapshot */}
           <div
             role="button"
             tabIndex={0}
             onClick={() => navigate('/analytics')}
-            onKeyDown={e => e.key === 'Enter' && navigate('/analytics')}
-            style={{ ...card, flex: 1, padding: '14px 16px', cursor: 'pointer', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', transition: 'background .2s' }}
-            onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-            onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+            onKeyDown={(e) => e.key === 'Enter' && navigate('/analytics')}
+            style={{
+              ...card,
+              flex: 1,
+              padding: '14px 16px',
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              transition: 'background .2s',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={sectionLabel}>Analytics</span>
@@ -281,24 +461,38 @@ export const Dashboard: React.FC = () => {
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end' }}>
               <div style={{ flex: 1 }}>
-                <p style={{ fontFamily: MONO, fontSize: '2.4rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{todaySessions.length}</p>
+                <p style={{ fontFamily: MONO, fontSize: '2.4rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums' }}>
+                  {displayedTodaySessionCount}
+                </p>
                 <p style={metricSub}>sessions today</p>
               </div>
               <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,.06)', margin: '0 14px' }} />
               <div style={{ flex: 1 }}>
-                <p style={{ fontFamily: MONO, fontSize: '2.4rem', fontWeight: 700, lineHeight: 1, margin: 0, fontVariantNumeric: 'tabular-nums', color: 'rgba(255,255,255,.7)' }}>
+                <p
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: '2.4rem',
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    margin: 0,
+                    fontVariantNumeric: 'tabular-nums',
+                    color: 'rgba(255,255,255,.7)',
+                  }}
+                >
                   {formatDuration(todayFocusTime)}
                 </p>
                 <p style={metricSub}>focus time</p>
+                <p style={{ ...metricSub, marginTop: 4 }}>
+                  idle: {formatDuration(todayIdleTime)} · distraction: {formatDuration(todayDistractionTime)}
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Flow */}
           <div
             style={{ ...card, flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', transition: 'background .2s' }}
-            onMouseEnter={e => (e.currentTarget.style.background = '#111318')}
-            onMouseLeave={e => (e.currentTarget.style.background = '#0d0e13')}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#111318')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#0d0e13')}
           >
             <div
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: '12px' }}
@@ -311,34 +505,44 @@ export const Dashboard: React.FC = () => {
             <form onSubmit={handleAddNLPTask} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <input
                 value={nlpInput}
-                onChange={e => setNlpInput(e.target.value)}
+                onChange={(e) => setNlpInput(e.target.value)}
                 placeholder="Physics from 10am to 2pm — or just type"
                 disabled={isAddingTask}
                 style={{
-                  width:        '100%',
-                  background:   'rgba(255,255,255,.04)',
-                  border:       '1px solid rgba(255,255,255,.08)',
+                  width: '100%',
+                  background: 'rgba(255,255,255,.04)',
+                  border: '1px solid rgba(255,255,255,.08)',
                   borderRadius: '5px',
-                  padding:      '8px 11px',
-                  fontSize:     '12px',
-                  fontFamily:   UI,
-                  color:        'rgba(255,255,255,.75)',
-                  outline:      'none',
-                  caretColor:   '#fff',
-                  boxSizing:    'border-box',
-                  transition:   'border-color .15s',
+                  padding: '8px 11px',
+                  fontSize: '12px',
+                  fontFamily: UI,
+                  color: 'rgba(255,255,255,.75)',
+                  outline: 'none',
+                  caretColor: '#fff',
+                  boxSizing: 'border-box',
+                  transition: 'border-color .15s',
                 }}
-                onFocus={e  => (e.currentTarget.style.borderColor = 'rgba(255,255,255,.2)')}
-                onBlur={e   => (e.currentTarget.style.borderColor = 'rgba(255,255,255,.08)')}
+                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,.2)')}
+                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,.08)')}
               />
               {recentTask && (
-                <p style={{ fontFamily: MONO, fontSize: '10px', color: 'rgba(255,255,255,.3)', marginTop: '7px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  ↳ {recentTask.text}{recentTask.time ? ` · ${recentTask.time}–${recentTask.endTime}` : ''}
+                <p
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: '10px',
+                    color: 'rgba(255,255,255,.3)',
+                    marginTop: '7px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  ↳ {recentTask.text}
+                  {recentTask.time ? ` · ${recentTask.time}–${recentTask.endTime}` : ''}
                 </p>
               )}
             </form>
           </div>
-
         </div>
       </div>
     </div>

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Privacy Policy — Grynd</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=Lora:ital,wght@0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #060608;
+      --surface: #0f0f11;
+      --border: #1c1c1f;
+      --text-primary: #f0f0f0;
+      --text-secondary: #6b6b72;
+      --text-muted: #3a3a40;
+      --accent: #3B82F6;
+      --accent-dim: rgba(59,130,246,0.12);
+    }
+
+    html { background: var(--bg); color: var(--text-primary); font-family: 'DM Sans', sans-serif; }
+
+    body {
+      min-height: 100vh;
+      padding: 0;
+    }
+
+    /* Header */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 24px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .logo-dot {
+      width: 7px;
+      height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      margin-left: 1px;
+      margin-bottom: 8px;
+    }
+
+    header nav {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    header nav a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    /* Layout */
+    .wrapper {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 80px 24px 120px;
+    }
+
+    /* Hero */
+    .hero {
+      margin-bottom: 64px;
+      padding-bottom: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .hero-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      font-family: 'Lora', serif;
+      font-size: clamp(32px, 5vw, 48px);
+      font-weight: 600;
+      line-height: 1.15;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+    }
+
+    .hero-meta {
+      font-size: 13px;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .hero-meta span {
+      color: var(--text-muted);
+      margin: 0 8px;
+    }
+
+    /* Sections */
+    section {
+      margin-bottom: 56px;
+    }
+
+    .section-number {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.1em;
+      margin-bottom: 12px;
+    }
+
+    h2 {
+      font-family: 'Lora', serif;
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 20px;
+      line-height: 1.3;
+    }
+
+    p {
+      font-size: 15px;
+      line-height: 1.75;
+      color: #a0a0a8;
+      margin-bottom: 16px;
+    }
+
+    p:last-child { margin-bottom: 0; }
+
+    /* Data table */
+    .data-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 24px 0;
+    }
+
+    .data-row {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .data-row:last-child { border-bottom: none; }
+
+    .data-key {
+      padding: 14px 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+    }
+
+    .data-val {
+      padding: 14px 20px;
+      font-size: 14px;
+      color: #b0b0b8;
+      line-height: 1.6;
+    }
+
+    /* Inline highlight */
+    .pill {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin: 2px 2px;
+    }
+
+    /* Notice block */
+    .notice {
+      background: rgba(59,130,246,0.05);
+      border-left: 2px solid var(--accent);
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin: 24px 0;
+    }
+
+    .notice p {
+      font-size: 14px;
+      color: #8090a8;
+      margin: 0;
+    }
+
+    /* Divider */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 56px 0;
+    }
+
+    /* Contact */
+    .contact-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .contact-block h3 {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .contact-block p {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin: 0;
+    }
+
+    .contact-link {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--accent);
+      text-decoration: none;
+      white-space: nowrap;
+      border: 1px solid rgba(59,130,246,0.3);
+      padding: 10px 18px;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+
+    .contact-link:hover {
+      background: var(--accent-dim);
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 28px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    footer p {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    footer a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    @media (max-width: 600px) {
+      header, footer { padding: 20px 24px; }
+      .data-row { grid-template-columns: 1fr; }
+      .data-key { border-right: none; border-bottom: 1px solid var(--border); }
+      .contact-block { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <a class="logo" href="https://grynd.tech">GRYND<span class="logo-dot"></span></a>
+    <nav>Privacy Policy <span>·</span> <a href="https://grynd.tech">grynd.tech</a></nav>
+  </header>
+
+  <div class="wrapper">
+
+    <div class="hero">
+      <div class="hero-label">Legal</div>
+      <h1>Privacy Policy</h1>
+      <div class="hero-meta">
+        Effective April 16, 2026 <span>·</span> Last updated April 16, 2026
+      </div>
+    </div>
+
+    <section>
+      <div class="section-number">01 —</div>
+      <h2>Who We Are</h2>
+      <p>Grynd ("we", "our", "us") is a behavioral enforcement platform built for competitive exam students in India. We operate the Grynd web application at <strong>grynd.tech</strong> and the <strong>GryndMode Chrome Extension</strong>.</p>
+      <p>We are committed to handling your data transparently. This policy explains what we collect, why we collect it, and how it is used.</p>
+    </section>
+
+    <section>
+      <div class="section-number">02 —</div>
+      <h2>Information We Collect</h2>
+      <p>We collect two categories of data — account information provided during sign-in, and behavioral data generated through your use of the platform and extension.</p>
+
+      <div class="data-block">
+        <div class="data-row">
+          <div class="data-key">Name</div>
+          <div class="data-val">Collected via Google OAuth at account creation. Used to personalise your dashboard.</div>
+        </div>
+        <div class="data-row">
+          <div class="data-key">Email Address</div>
+          <div class="data-val">Collected via Google OAuth. Used for authentication, account recovery, and product communications.</div>
+        </div>
+        <div class="data-row">
+          <div class="data-key">Study Sessions</div>
+          <div class="data-val">Session start/end times, subject, mode (Pomodoro / Custom), focus duration, and interruption events.</div>
+        </div>
+        <div class="data-row">
+          <div class="data-key">Behavioral Events</div>
+          <div class="data-val">Tab activity, URL categories, active vs idle time, and distraction patterns — captured by the GryndMode Chrome Extension while a study session is active.</div>
+        </div>
+        <div class="data-row">
+          <div class="data-key">Derived Metrics</div>
+          <div class="data-val">Focus Score, Consistency Score, and Ideal vs Actual adherence — computed from your session data.</div>
+        </div>
+      </div>
+
+      <div class="notice">
+        <p>The GryndMode extension only tracks browser activity <strong>during active study sessions</strong>. Tracking is strictly session-scoped. We do not monitor general browsing outside of an active Grynd session.</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-number">03 —</div>
+      <h2>How We Use Your Data</h2>
+      <p>All data collected is used solely to deliver and improve the Grynd product experience. Specifically:</p>
+      <p>
+        <span class="pill">authentication</span> Sign-in and identity verification via Google OAuth.<br/>
+        <span class="pill">enforcement</span> Detecting distraction patterns and generating behavioral nudges during sessions.<br/>
+        <span class="pill">analytics</span> Computing your focus metrics, streaks, and performance trends shown on your dashboard.<br/>
+        <span class="pill">product improvement</span> Aggregate, anonymised usage data to improve platform features.
+      </p>
+      <p>We do not sell, rent, or share your personal data with third parties for advertising or marketing purposes.</p>
+    </section>
+
+    <section>
+      <div class="section-number">04 —</div>
+      <h2>Google OAuth &amp; Third-Party Services</h2>
+      <p>We use <strong>Google OAuth 2.0</strong> for authentication. We only request access to your name and email address — we do not access your Google Calendar, Gmail, Drive, or any other Google services.</p>
+      <p>Our infrastructure runs on <strong>Supabase</strong> (database and authentication) hosted on secure cloud servers. Data is encrypted in transit (TLS) and at rest.</p>
+    </section>
+
+    <section>
+      <div class="section-number">05 —</div>
+      <h2>GryndMode Chrome Extension</h2>
+      <p>The GryndMode extension monitors your active browser tab and URL patterns exclusively within an active Grynd study session. It classifies activity into study or distraction categories and surfaces behavioral nudges to keep you on task.</p>
+      <p>The extension does not:</p>
+      <p>
+        <span class="pill">✕</span> Read page content or form inputs.<br/>
+        <span class="pill">✕</span> Track activity outside of active Grynd sessions.<br/>
+        <span class="pill">✕</span> Access passwords, payment info, or personal files.<br/>
+        <span class="pill">✕</span> Share data with any entity outside of Grynd.
+      </p>
+    </section>
+
+    <section>
+      <div class="section-number">06 —</div>
+      <h2>Data Retention</h2>
+      <p>We retain your account data and session history for as long as your account is active. If you delete your account, all personal data and session records are permanently deleted within 30 days.</p>
+      <p>You may request deletion of your data at any time by contacting us at the address below.</p>
+    </section>
+
+    <section>
+      <div class="section-number">07 —</div>
+      <h2>Your Rights</h2>
+      <p>You have the right to access, correct, export, or delete your personal data at any time. To exercise any of these rights, email us directly. We will respond within 7 business days.</p>
+    </section>
+
+    <section>
+      <div class="section-number">08 —</div>
+      <h2>Changes to This Policy</h2>
+      <p>We may update this policy as the product evolves. Material changes will be communicated via email or a notice on the platform. The effective date at the top of this page will always reflect the latest revision.</p>
+    </section>
+
+    <hr class="divider"/>
+
+    <div class="contact-block">
+      <div>
+        <h3>Questions about your data?</h3>
+        <p>Reach us directly — we respond within 7 business days.</p>
+      </div>
+      <a class="contact-link" href="mailto:aryannpareek380@gmail.com">aryannpareek380@gmail.com</a>
+    </div>
+
+  </div>
+
+  <footer>
+    <p>© 2026 Grynd. All rights reserved.</p>
+    <a href="https://grynd.tech">grynd.tech</a>
+  </footer>
+
+</body>
+</html>

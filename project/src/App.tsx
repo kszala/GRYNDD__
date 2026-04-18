@@ -1,13 +1,15 @@
 import { useState, useEffect, Suspense, lazy } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import LandingPage from './components/LandingPage';
-import { Layout }  from './components/Layout';
+import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
-import { History }  from './components/History';
+import { History } from './components/History';
 import { useTimerStore } from './store/timestore';
 import supabase from './supabaseClient';
 import GryndFlow from './components/GryndFlow';
 import GryndTube from './components/GryndTube';
+import PrivacyPage from './components/PrivacyPage';
+import TermsPage from './components/TermsPage';
 import { useActivityTracker } from '@/hooks/useActivityTracker';
 
 // Error Boundary Component
@@ -176,29 +178,35 @@ function App() {
     );
   }
 
-  if (!user) {
-    const Landing = LandingPage as any;
-    return <Landing onAuthSuccess={handleAuthSuccess} />;
-  }
-
   return (
     <ErrorBoundary>
       <Suspense fallback={<LoadingSpinner />}>
         <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="flow" element={<GryndFlow />} />
-            <Route path="gryndtube" element={<GryndTube user={user} />} />
-            <Route
-              path="analytics"
-              element={
-                <ErrorBoundary>
-                  <Analytics />
-                </ErrorBoundary>
-              }
-            />
-            <Route path="history" element={<History />} />
+          <Route
+            path="/"
+            element={!user ? <LandingPage onAuthSuccess={handleAuthSuccess} /> : <Layout />}
+          >
+            {user && (
+              <>
+                <Route index element={<Dashboard />} />
+                <Route path="flow" element={<GryndFlow />} />
+                <Route path="gryndtube" element={<GryndTube user={user} />} />
+                <Route
+                  path="analytics"
+                  element={
+                    <ErrorBoundary>
+                      <Analytics />
+                    </ErrorBoundary>
+                  }
+                />
+                <Route path="history" element={<History />} />
+              </>
+            )}
           </Route>
+
+          <Route path="privacy" element={<PrivacyPage />} />
+          <Route path="terms" element={<TermsPage />} />
+          <Route path="*" element={!user ? <LandingPage onAuthSuccess={handleAuthSuccess} /> : <Layout />} />
         </Routes>
       </Suspense>
     </ErrorBoundary>

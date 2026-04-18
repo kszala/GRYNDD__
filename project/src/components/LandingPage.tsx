@@ -409,8 +409,8 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
         <div className="max-w-6xl mx-auto px-8 flex justify-between items-center text-[10px] font-mono text-[#5E6673]">
           <div>GRYND</div>
           <div className="flex gap-6">
-            <a href="privacy.html" className="hover:text-[#E8E8E6] transition">Privacy</a>
-            <a href="terms.html" className="hover:text-[#E8E8E6] transition">Terms</a>
+            <a href="#/privacy" className="hover:text-[#E8E8E6] transition">Privacy</a>
+            <a href="#/terms" className="hover:text-[#E8E8E6] transition">Terms</a>
             <a href="#" className="hover:text-[#E8E8E6] transition">Contact</a>
           </div>
         </div>

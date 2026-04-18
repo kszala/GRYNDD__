@@ -48,8 +48,5 @@
     "typescript": "^5.9.2",
     "vite": "^5.2.0",
     "vitest": "^2.1.9"
-  },
-  "resolutions": {
-    "typescript": "5.8.4"
   }
 }

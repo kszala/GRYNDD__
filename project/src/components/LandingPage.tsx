@@ -407,12 +407,14 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       {/* Footer */}
       <footer className="border-t border-[#1F2128] py-6">
         <div className="max-w-6xl mx-auto px-8 flex justify-between items-center text-[10px] font-mono text-[#5E6673]">
-          <div>GRYND</div>
           <div className="flex gap-6">
             <a href="#/privacy" className="hover:text-[#E8E8E6] transition">Privacy</a>
             <a href="#/terms" className="hover:text-[#E8E8E6] transition">Terms</a>
-            <a href="mailto:hello.grynd.tech" className="hover:text-[#E8E8E6] transition">hello.grynd.tech</a>
-            <a href="mailto:support.grynd.tech" className="hover:text-[#E8E8E6] transition">support.grynd.tech</a>
+            <span>Contact Us</span>
+          </div>
+          <div className="text-right">
+            <div>Reach out to us at <a href="mailto:support@grynd.tech" className="hover:text-[#E8E8E6] transition">support@grynd.tech</a> for support</div>
+            <div>and <a href="mailto:hello@grynd.tech" className="hover:text-[#E8E8E6] transition">hello@grynd.tech</a> for directly contacting founder</div>
           </div>
         </div>
       </footer>

@@ -10,6 +10,7 @@ import GryndFlow from './components/GryndFlow';
 import GryndTube from './components/GryndTube';
 import PrivacyPage from './components/PrivacyPage';
 import TermsPage from './components/TermsPage';
+import ContactPage from './components/ContactPage';
 import { useActivityTracker } from '@/hooks/useActivityTracker';
 
 // Error Boundary Component
@@ -206,6 +207,7 @@ function App() {
 
           <Route path="privacy" element={<PrivacyPage />} />
           <Route path="terms" element={<TermsPage />} />
+          <Route path="contact" element={<ContactPage />} />
           <Route path="*" element={!user ? <LandingPage onAuthSuccess={handleAuthSuccess} /> : <Layout />} />
         </Routes>
       </Suspense>

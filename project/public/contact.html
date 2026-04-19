@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Contact Us — Grynd</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=Lora:ital,wght@0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #060608;
+      --surface: #0f0f11;
+      --border: #1c1c1f;
+      --text-primary: #f0f0f0;
+      --text-secondary: #6b6b72;
+      --text-muted: #3a3a40;
+      --accent: #3B82F6;
+      --accent-dim: rgba(59,130,246,0.12);
+    }
+
+    html { background: var(--bg); color: var(--text-primary); font-family: 'DM Sans', sans-serif; }
+
+    body {
+      min-height: 100vh;
+      padding: 0;
+    }
+
+    /* Header */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 24px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -0.5px;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .logo-dot {
+      width: 7px;
+      height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      margin-left: 1px;
+      margin-bottom: 8px;
+    }
+
+    header nav {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    header nav a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    /* Layout */
+    .wrapper {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 80px 24px 120px;
+    }
+
+    /* Hero */
+    .hero {
+      margin-bottom: 64px;
+      padding-bottom: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .hero h1 {
+      font-family: 'Lora', serif;
+      font-size: 48px;
+      font-weight: 600;
+      line-height: 1.1;
+      margin-bottom: 16px;
+      color: var(--text-primary);
+    }
+
+    .hero p {
+      font-size: 18px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+    }
+
+    /* Content */
+    .content h2 {
+      font-family: 'Lora', serif;
+      font-size: 32px;
+      font-weight: 600;
+      margin: 48px 0 24px 0;
+      color: var(--text-primary);
+    }
+
+    .content p {
+      font-size: 16px;
+      line-height: 1.7;
+      margin-bottom: 20px;
+      color: var(--text-secondary);
+    }
+
+    .contact-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .contact-item h3 {
+      font-family: 'Lora', serif;
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .contact-item p {
+      font-size: 16px;
+      line-height: 1.6;
+      margin-bottom: 16px;
+      color: var(--text-secondary);
+    }
+
+    .email-link {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      padding: 12px 20px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .email-link:hover {
+      background: var(--accent);
+      color: white;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 48px 0;
+      text-align: center;
+      margin-top: 80px;
+    }
+
+    footer p {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="logo">
+      GRYN<span class="logo-dot">D</span>
+    </a>
+    <nav>
+      <a href="/">Back to Grynd</a>
+    </nav>
+  </header>
+
+  <div class="wrapper">
+    <section class="hero">
+      <h1>Contact Us</h1>
+      <p>Get in touch with the Grynd team. We're here to help you build relentless consistency.</p>
+    </section>
+
+    <section class="content">
+      <div class="contact-item">
+        <h3>General Support</h3>
+        <p>Need help with your Grynd account, sessions, or have questions about our features? Our support team is ready to assist you.</p>
+        <a href="mailto:support@grynd.tech" class="email-link">support@grynd.tech</a>
+      </div>
+
+      <div class="contact-item">
+        <h3>Direct Founder Contact</h3>
+        <p>For partnerships, business inquiries, or direct communication with the founder, reach out directly.</p>
+        <a href="mailto:hello@grynd.tech" class="email-link">hello@grynd.tech</a>
+      </div>
+
+      <div class="contact-item">
+        <h3>Response Time</h3>
+        <p>We typically respond to all inquiries within 24-48 hours. For urgent technical issues, please use the support email above.</p>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <p>&copy; 2026 Grynd. All rights reserved.</p>
+    <p><a href="/privacy">Privacy Policy</a> | <a href="/terms">Terms of Service</a></p>
+  </footer>
+</body>
+</html>

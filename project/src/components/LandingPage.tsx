@@ -411,7 +411,8 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
           <div className="flex gap-6">
             <a href="#/privacy" className="hover:text-[#E8E8E6] transition">Privacy</a>
             <a href="#/terms" className="hover:text-[#E8E8E6] transition">Terms</a>
-            <a href="#" className="hover:text-[#E8E8E6] transition">Contact</a>
+            <a href="mailto:hello@grynd.tech" className="hover:text-[#E8E8E6] transition">hello@grynd.tech</a>
+            <a href="mailto:support@grynd.tech" className="hover:text-[#E8E8E6] transition">support@grynd.tech</a>
           </div>
         </div>
       </footer>

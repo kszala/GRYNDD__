@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft } from 'lucide-react';
 import { youtubeService } from '../services/youtubeService';
 import supabase from '../supabaseClient';
 import { useTimerStore } from '../store/timestore';
@@ -468,18 +469,30 @@ export default function GryndTube({ user }: GryndTubeProps) {
   const savedPlaylistItems = savedItems.filter((item) => item.type === 'playlist');
   const savedVideoItems = savedItems.filter((item) => item.type === 'video');
 
+  const handleReset = () => {
+    setSelectedVideo(null);
+    setActivePlaylist(null);
+    setResumeAtSeconds(undefined);
+    setIsPanelCollapsed(false);
+    setSearchInput('');
+    setSearchResults([]);
+    setHasSearched(false);
+  };
+
   return (
     <div className="min-h-screen bg-[#0B0B0F] px-4 py-6 text-[var(--gt-text)] sm:px-6 lg:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
-        <div className="mx-auto w-full max-w-3xl">
-          <SearchHero
-            value={searchInput}
-            onChange={setSearchInput}
-            onSearch={() => {
-              void handleSearch();
-            }}
-          />
-        </div>
+        {!selectedVideo && !activePlaylist && (
+          <div className="mx-auto w-full max-w-3xl">
+            <SearchHero
+              value={searchInput}
+              onChange={setSearchInput}
+              onSearch={() => {
+                void handleSearch();
+              }}
+            />
+          </div>
+        )}
 
         {pageError ? (
           <div className="mx-auto max-w-3xl rounded-lg border border-[var(--grynd-border)] bg-[#111316] px-5 py-4 text-sm text-[var(--grynd-text)]">
@@ -490,6 +503,14 @@ export default function GryndTube({ user }: GryndTubeProps) {
         {selectedVideo ? (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
             <div className="space-y-4">
+              <button
+                type="button"
+                onClick={handleReset}
+                className="flex items-center gap-1.5 text-sm text-[var(--gt-muted)] hover:text-[var(--gt-soft)] transition"
+              >
+                <ChevronLeft size={16} />
+                <span>Back</span>
+              </button>
               <VideoPlayerPanel
                 video={selectedVideo}
                 userId={user.id}
@@ -499,8 +520,30 @@ export default function GryndTube({ user }: GryndTubeProps) {
               />
             </div>
             <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-              <StudyLoadPanel totalDuration={totalDurationSeconds} />
-              {activeVideos.length > 0 && (
+              {selectedVideo && !activePlaylist ? (
+                <div className="rounded-lg border border-[var(--gt-border)] bg-[var(--gt-surface)] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--gt-muted)] font-mono">Speed</p>
+                  {videoDurations ? (
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-[var(--gt-soft)]">
+                      <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
+                        <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1x</p>
+                        <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{videoDurations.normal}</p>
+                      </div>
+                      <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
+                        <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1.25x</p>
+                        <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{videoDurations.x125}</p>
+                      </div>
+                      <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
+                        <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1.5x</p>
+                        <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{videoDurations.x15}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <StudyLoadPanel totalDuration={totalDurationSeconds} />
+              )}
+              {activeVideos.length > 0 && activePlaylist && (
                 <RangeCalculator
                   totalItems={activeVideos.length}
                   items={activeVideos.map((video) => ({ durationSeconds: video.durationSeconds || 0 }))}

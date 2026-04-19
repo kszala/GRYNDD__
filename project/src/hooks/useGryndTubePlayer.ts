@@ -66,6 +66,7 @@ export const useGryndTubePlayer = ({
   const metricsRef = useRef<VideoSessionMetrics>(emptyMetrics(video?.durationSeconds || 0));
   const currentTimeRef = useRef<number | null>(null);
   const lastHeartbeatRef = useRef(0);
+  const hasResumedRef = useRef(false);
   const [metrics, setMetrics] = useState<VideoSessionMetrics>(emptyMetrics(video?.durationSeconds || 0));
   const [isReady, setIsReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -161,11 +162,23 @@ export const useGryndTubePlayer = ({
     setIsReady(false);
     setIsPlaying(false);
     setPlayerError(null);
+    hasResumedRef.current = false;
   }, [video?.videoId, video?.durationSeconds]);
 
   useEffect(() => {
     analyticsService.registerVideoOutboxHandlers();
   }, []);
+
+  // Watch for resumeAtSeconds becoming available and seek if player is ready
+  useEffect(() => {
+    if (!playerRef.current || !isReady || !resumeAtSeconds || resumeAtSeconds <= 0 || hasResumedRef.current) {
+      return;
+    }
+
+    // Seek to the resume position
+    playerRef.current.seekTo(Math.min(resumeAtSeconds, video?.durationSeconds || resumeAtSeconds - 2), true);
+    hasResumedRef.current = true;
+  }, [resumeAtSeconds, isReady, video?.durationSeconds]);
 
   useEffect(() => {
     const recoverActiveVideoSession = async () => {
@@ -223,8 +236,10 @@ export const useGryndTubePlayer = ({
           },
           events: {
             onReady: (event) => {
-              if (resumeAtSeconds && resumeAtSeconds > 5) {
+              // Attempt to resume if position is available and > 0
+              if (resumeAtSeconds && resumeAtSeconds > 0 && !hasResumedRef.current) {
                 event.target.seekTo(Math.min(resumeAtSeconds, video.durationSeconds - 2), true);
+                hasResumedRef.current = true;
               }
 
               setIsReady(true);

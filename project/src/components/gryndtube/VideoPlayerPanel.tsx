@@ -96,23 +96,6 @@ export function VideoPlayerPanel({
             </span>
           </div>
 
-          {durations ? (
-            <div className="mx-4 mb-3 grid grid-cols-3 gap-2 text-[11px] text-[var(--gt-soft)]">
-              <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
-                <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1x</p>
-                <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{durations.normal}</p>
-              </div>
-              <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
-                <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1.25x</p>
-                <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{durations.x125}</p>
-              </div>
-              <div className="rounded-lg bg-[var(--gt-panel)] px-3 py-2 text-center">
-                <p className="text-[10px] uppercase text-[var(--gt-muted)] font-mono">1.5x</p>
-                <p className="mt-1 text-[12px] text-[var(--gt-text)] font-mono">{durations.x15}</p>
-              </div>
-            </div>
-          ) : null}
-
           {resumeAtSeconds ? (
             <p className="px-4 pb-3 text-[12px] text-[var(--gt-muted)]">
               Resuming from {formatSeconds(resumeAtSeconds)}

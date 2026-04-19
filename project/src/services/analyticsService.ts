@@ -172,7 +172,7 @@ const deriveVideoSessionFromEvents = (
     video_id: firstMetadata.videoId,
     video_title: firstMetadata.videoTitle || null,
     channel_id: firstMetadata.channelId || null,
-    channel_title: firstMetadata.channelName || null,
+    channel_name: firstMetadata.channelName || null,
     watched_seconds: maxWatchedFromEvents,
     total_duration_seconds: totalDurationSeconds,
     completion_percentage: buildCompletionPercentage(maxWatchedFromEvents, totalDurationSeconds),
@@ -266,6 +266,16 @@ const syncVideoSessionFromEvents = async (sessionId: string, userId: string) => 
     return;
   }
 
+  // FIX 3: Log the payload for verification
+  console.log('[GryndTube Analytics] Syncing video session:', {
+    sessionId: sessionPayload.id,
+    videoId: sessionPayload.video_id,
+    channel_name: sessionPayload.channel_name,
+    watched_seconds: sessionPayload.watched_seconds,
+    total_duration_seconds: sessionPayload.total_duration_seconds,
+    completion_percentage: sessionPayload.completion_percentage,
+  });
+
   const { error: upsertError } = await supabase
     .from('video_sessions')
     .upsert(sessionPayload as unknown as SessionRow, {
@@ -274,8 +284,11 @@ const syncVideoSessionFromEvents = async (sessionId: string, userId: string) => 
     });
 
   if (upsertError) {
+    console.error('[GryndTube Analytics] Video session upsert failed:', upsertError);
     throw upsertError;
   }
+
+  console.log('[GryndTube Analytics] Video session synced successfully');
 };
 
 const registerVideoOutboxHandlers = () => {

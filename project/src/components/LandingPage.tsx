@@ -409,9 +409,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
         <div className="max-w-6xl mx-auto px-8">
           {/* Main footer content */}
           <div className="flex justify-between items-center mb-6">
-            <div className="flex items-center gap-2 font-semibold text-lg text-[#E8E8E6]">
-              GRYN<span className="w-2 h-2 bg-[#3B82F6] rounded-full inline-block"></span>D
-            </div>
+            <GryndLogo />
             <div className="flex gap-8 text-sm text-[#9CA3AF]">
               <a href="#/privacy" className="hover:text-[#E8E8E6] transition">Privacy</a>
               <a href="#/terms" className="hover:text-[#E8E8E6] transition">Terms</a>
@@ -422,8 +420,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
           {/* Copyright */}
           <div className="text-center text-xs text-[#6B7280] border-t border-[#1F2128] pt-6">
             <div className="flex items-center justify-center gap-2 mb-2">
-              <span className="font-semibold text-[#E8E8E6]">GRYND</span>
-              <span className="w-1.5 h-1.5 bg-[#3B82F6] rounded-full"></span>
+              <GryndLogo collapsed />
             </div>
             <p>&copy; 2026 Grynd. All rights reserved.</p>
           </div>

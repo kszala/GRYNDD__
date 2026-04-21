@@ -1,4 +1,9 @@
-import { fetchSessionEvents, aggregateSessionsFromEvents } from './sessionEventAnalytics';
+import {
+  fetchSessionEvents,
+  aggregateSessionsFromEvents,
+  type SessionEventRow,
+} from './sessionEventAnalytics';
+import { toISTHour } from '../lib/dateUtils';
 
 export interface HourlyFocusInsight {
   hour: number;
@@ -40,9 +45,10 @@ const buildAdherenceScore = (focusSeconds: number, inactiveSeconds: number) => {
 };
 
 export async function computeBestStudyHours(
-  userId: string
+  userId: string,
+  preloadedEvents?: SessionEventRow[]
 ): Promise<HourlyFocusInsight[]> {
-  const events = await fetchSessionEvents(userId);
+  const events = preloadedEvents ?? await fetchSessionEvents(userId);
   if (!events.length) {
     return [];
   }
@@ -51,7 +57,7 @@ export async function computeBestStudyHours(
   const sessions = aggregateSessionsFromEvents(events);
 
   sessions.forEach((session) => {
-    const hour = new Date(session.startedAt).getUTCHours();
+    const hour = toISTHour(new Date(session.startedAt));
     const score = buildFocusScore(session.focusSeconds, session.inactiveSeconds);
     const existing = hourMap.get(hour) ?? { total: 0, count: 0 };
     hourMap.set(hour, {
@@ -70,9 +76,10 @@ export async function computeBestStudyHours(
 }
 
 export async function computeInterruptionPatterns(
-  userId: string
+  userId: string,
+  preloadedEvents?: SessionEventRow[]
 ): Promise<InterruptionPatternInsight[]> {
-  const events = await fetchSessionEvents(userId);
+  const events = preloadedEvents ?? await fetchSessionEvents(userId);
   if (!events.length) {
     return [];
   }
@@ -81,7 +88,7 @@ export async function computeInterruptionPatterns(
   const sessions = aggregateSessionsFromEvents(events);
 
   sessions.forEach((session) => {
-    const hour = new Date(session.startedAt).getUTCHours();
+    const hour = toISTHour(new Date(session.startedAt));
     const existing = hourMap.get(hour) ?? { totalInterruptions: 0, count: 0 };
     hourMap.set(hour, {
       totalInterruptions: existing.totalInterruptions + session.interruptionCount,
@@ -100,9 +107,10 @@ export async function computeInterruptionPatterns(
 }
 
 export async function computeSubjectPerformance(
-  userId: string
+  userId: string,
+  preloadedEvents?: SessionEventRow[]
 ): Promise<SubjectPerformanceInsight[]> {
-  const events = await fetchSessionEvents(userId);
+  const events = preloadedEvents ?? await fetchSessionEvents(userId);
   if (!events.length) {
     return [];
   }

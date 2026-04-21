@@ -2,6 +2,7 @@ import { supabase } from '@/supabaseClient';
 import type { AttentionBlockRow } from '@/services/behaviorEngine';
 import { mapBlock } from '@/services/attentionMapper';
 import { getAttentionBlocks, getClippedBlockInterval } from '@/services/attentionAnalyticsService';
+import { formatISTWeekday, toISTDateString } from '@/lib/dateUtils';
 
 export interface DailyFocusTrend {
   date: string;
@@ -92,8 +93,8 @@ export async function getChartDataDailyFocusTrend(userId: string, days: number =
     // Initialize days
     for (let i = 0; i < days; i++) {
       const date = new Date(from.getTime() + i * 24 * 60 * 60 * 1000);
-      const dateStr = date.toISOString().split('T')[0];
-      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const dateStr = toISTDateString(date);
+      const dayName = formatISTWeekday(date);
       dailyMap.set(dateStr, {
         date: dateStr,
         day: dayName,
@@ -106,11 +107,12 @@ export async function getChartDataDailyFocusTrend(userId: string, days: number =
     // Add session data
     if (data) {
       data.forEach((row: any) => {
-        const date = row.date || row.session_date;
-        if (date) {
-          const entry = dailyMap.get(date) || {
-            date,
-            day: new Date(date).toLocaleDateString('en-US', { weekday: 'short' }),
+        const rowDate = row.date || row.session_date;
+        if (rowDate) {
+          const normalizedDate = toISTDateString(new Date(rowDate));
+          const entry = dailyMap.get(normalizedDate) || {
+            date: normalizedDate,
+            day: formatISTWeekday(new Date(rowDate)),
             focusMinutes: 0,
             distractionMinutes: 0,
             videoWatchMinutes: 0,
@@ -119,7 +121,7 @@ export async function getChartDataDailyFocusTrend(userId: string, days: number =
           entry.distractionMinutes += Math.round(
             (row.distraction_minutes || row.distractionMinutes || 0) / 60
           );
-          dailyMap.set(date, entry);
+          dailyMap.set(normalizedDate, entry);
         }
       });
     }
@@ -127,7 +129,7 @@ export async function getChartDataDailyFocusTrend(userId: string, days: number =
     // Add video watch data
     if (videoData) {
       videoData.forEach((row: any) => {
-        const date = new Date(row.started_at).toISOString().split('T')[0];
+        const date = toISTDateString(new Date(row.started_at));
         const entry = dailyMap.get(date);
         if (entry) {
           entry.videoWatchMinutes += Math.round((row.watched_seconds || 0) / 60);
@@ -243,8 +245,8 @@ export async function getChartDataPauseInterruptions(userId: string, days: numbe
     // Initialize days
     for (let i = 0; i < days; i++) {
       const date = new Date(from.getTime() + i * 24 * 60 * 60 * 1000);
-      const dateStr = date.toISOString().split('T')[0];
-      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const dateStr = toISTDateString(date);
+      const dayName = formatISTWeekday(date);
       dailyMap.set(dateStr, {
         date: dateStr,
         day: dayName,
@@ -256,7 +258,7 @@ export async function getChartDataPauseInterruptions(userId: string, days: numbe
     // Count events
     if (events) {
       events.forEach((event: any) => {
-        const date = event.event_timestamp.split('T')[0];
+        const date = toISTDateString(new Date(event.event_timestamp));
         const entry = dailyMap.get(date);
         if (entry) {
           if (event.event_type === 'pause') entry.pauseCount++;
@@ -292,8 +294,8 @@ export async function getChartDataVideoWatchHours(userId: string, days: number =
     // Initialize days
     for (let i = 0; i < days; i++) {
       const date = new Date(from.getTime() + i * 24 * 60 * 60 * 1000);
-      const dateStr = date.toISOString().split('T')[0];
-      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const dateStr = toISTDateString(date);
+      const dayName = formatISTWeekday(date);
       dailyMap.set(dateStr, {
         date: dateStr,
         day: dayName,
@@ -304,7 +306,7 @@ export async function getChartDataVideoWatchHours(userId: string, days: number =
     // Aggregate video time
     if (videoSessions) {
       videoSessions.forEach((session: any) => {
-        const date = new Date(session.started_at).toISOString().split('T')[0];
+        const date = toISTDateString(new Date(session.started_at));
         const entry = dailyMap.get(date);
         if (entry) {
           entry.videoWatchHours += (session.watched_seconds || 0) / 3600;
@@ -319,15 +321,35 @@ export async function getChartDataVideoWatchHours(userId: string, days: number =
   }
 }
 
+export interface VideoSummaryStats {
+  totalWatchHours: number;
+  totalSessionCount: number;
+  videoCount: number;
+  avgCompletionRate: number;
+}
+
 // Video performance metrics (top videos)
-export async function getChartDataVideoPerformance(userId: string, limit: number = 10) {
+export async function getChartDataVideoPerformance(
+  userId: string,
+  limit: number = 10,
+  days?: number
+) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('video_sessions')
       .select('*')
       .eq('user_id', userId)
-      .order('watched_seconds', { ascending: false })
-      .limit(limit);
+      .order('watched_seconds', { ascending: false });
+
+    if (typeof days === 'number' && days > 0) {
+      const to = new Date();
+      const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+      query = query
+        .gte('started_at', from.toISOString())
+        .lte('started_at', to.toISOString());
+    }
+
+    const { data, error } = await query.limit(limit);
 
     if (error) throw error;
 
@@ -361,13 +383,27 @@ export async function getChartDataVideoPerformance(userId: string, limit: number
 }
 
 // Channel analytics
-export async function getChartDataVideoChannels(userId: string, limit: number = 10) {
+export async function getChartDataVideoChannels(
+  userId: string,
+  limit: number = 10,
+  days?: number
+) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('video_sessions')
       .select('channel_name, watched_seconds')
       .eq('user_id', userId)
       .not('channel_name', 'is', null);
+
+    if (typeof days === 'number' && days > 0) {
+      const to = new Date();
+      const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+      query = query
+        .gte('started_at', from.toISOString())
+        .lte('started_at', to.toISOString());
+    }
+
+    const { data, error } = await query;
 
     if (error) throw error;
 
@@ -397,6 +433,45 @@ export async function getChartDataVideoChannels(userId: string, limit: number = 
   } catch (error) {
     console.error('Error fetching video channels:', error);
     return [];
+  }
+}
+
+export async function getChartDataVideoSummary(
+  userId: string,
+  days: number = 7
+): Promise<VideoSummaryStats> {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+
+    const { data, error } = await supabase
+      .from('video_sessions')
+      .select('video_id, watched_seconds, completion_percentage, started_at')
+      .eq('user_id', userId)
+      .gte('started_at', from.toISOString())
+      .lte('started_at', to.toISOString());
+
+    if (error) throw error;
+
+    const rows = data || [];
+    const totalWatchedSeconds = rows.reduce((sum, row: any) => sum + (row.watched_seconds || 0), 0);
+    const totalCompletion = rows.reduce((sum, row: any) => sum + (row.completion_percentage || 0), 0);
+    const uniqueVideoIds = new Set(rows.map((row: any) => row.video_id).filter(Boolean));
+
+    return {
+      totalWatchHours: Math.round((totalWatchedSeconds / 3600) * 10) / 10,
+      totalSessionCount: rows.length,
+      videoCount: uniqueVideoIds.size,
+      avgCompletionRate: rows.length > 0 ? Math.round(totalCompletion / rows.length) : 0,
+    };
+  } catch (error) {
+    console.error('Error fetching video summary:', error);
+    return {
+      totalWatchHours: 0,
+      totalSessionCount: 0,
+      videoCount: 0,
+      avgCompletionRate: 0,
+    };
   }
 }
 

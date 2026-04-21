@@ -1,4 +1,5 @@
 import { fetchSessionEvents, aggregateSessionsFromEvents } from './sessionEventAnalytics';
+import { toISTDateString, toISTHour, toISTMinute } from '../lib/dateUtils';
 
 interface PeakFocusWindow {
   peakHour: number;
@@ -49,8 +50,8 @@ const formatHour = (hour: number): string => {
 
 const getMinutesUntilHour = (targetHour: number): number => {
   const now = new Date();
-  const currentHour = now.getHours();
-  const currentMinutes = now.getMinutes();
+  const currentHour = toISTHour(now);
+  const currentMinutes = toISTMinute(now);
 
   let hourDiff = targetHour - currentHour;
   if (hourDiff <= 0) {
@@ -61,10 +62,7 @@ const getMinutesUntilHour = (targetHour: number): number => {
 };
 
 const toDateKey = (value: Date) => {
-  const y = value.getFullYear();
-  const m = `${value.getMonth() + 1}`.padStart(2, '0');
-  const d = `${value.getDate()}`.padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return toISTDateString(value);
 };
 
 const focusScore = (focusSeconds: number, inactiveSeconds: number) => {
@@ -89,7 +87,7 @@ export async function getPeakFocusWindow(userId: string): Promise<PeakFocusWindo
 
     const hourlyStats = new Map<number, { totalScore: number; count: number }>();
     sessions.forEach((session) => {
-      const hour = new Date(session.startedAt).getHours();
+      const hour = toISTHour(new Date(session.startedAt));
       const score = focusScore(session.focusSeconds, session.inactiveSeconds);
       const existing = hourlyStats.get(hour) || { totalScore: 0, count: 0 };
       existing.totalScore += score;
@@ -225,7 +223,7 @@ export async function getPausePatterns(userId: string): Promise<PausePatterns> {
     const byHour = new Map<number, number>();
     const bySubject = new Map<string, number>();
     sessions.forEach((session) => {
-      const hour = new Date(session.startedAt).getHours();
+      const hour = toISTHour(new Date(session.startedAt));
       byHour.set(hour, (byHour.get(hour) || 0) + session.pauseCount);
       bySubject.set(session.subjectLabel, (bySubject.get(session.subjectLabel) || 0) + session.pauseCount);
     });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, TrendingUp, Brain, Zap, ArrowUp, ArrowDown, Minus, Play, ChevronDown } from 'lucide-react';
+import { Clock, TrendingUp, Brain, Zap, ArrowUp, ArrowDown, Minus, Play } from 'lucide-react';
 import {
   AreaChart,
   Area,
@@ -25,7 +25,17 @@ import {
 } from '@/services/attentionAnalyticsService';
 import { mapBlock } from '@/services/attentionMapper';
 import type { AttentionBlockRow } from '@/services/behaviorEngine';
+import {
+  computeBestStudyHours,
+  computeInterruptionPatterns,
+  computeSubjectPerformance,
+  type HourlyFocusInsight,
+  type InterruptionPatternInsight,
+  type SubjectPerformanceInsight,
+} from '@/services/behavioralInsights';
+import { fetchSessionEvents } from '@/services/sessionEventAnalytics';
 import { supabase } from '@/supabaseClient';
+import { formatISTDayLabel, getISTNextMidnight } from '@/lib/dateUtils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,7 +109,7 @@ async function getDailyFocusTimeline(
 
   for (let i = dayRange - 1; i >= 0; i--) {
     const d = new Date(to.getTime() - i * 24 * 60 * 60 * 1000);
-    const key = d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+    const key = formatISTDayLabel(d);
     dayMap[key] = emptyDayBuckets();
   }
 
@@ -114,13 +124,10 @@ async function getDailyFocusTimeline(
     let t = clip.clipStartMs;
     const clipEnd = clip.clipEndMs;
     while (t < clipEnd) {
-      const dayStart = new Date(t);
-      dayStart.setHours(0, 0, 0, 0);
-      const nextLocalMidnight = new Date(dayStart);
-      nextLocalMidnight.setDate(nextLocalMidnight.getDate() + 1);
-      const segEnd = Math.min(clipEnd, nextLocalMidnight.getTime());
+      const nextISTMidnight = getISTNextMidnight(new Date(t));
+      const segEnd = Math.min(clipEnd, nextISTMidnight.getTime());
       const mins = (segEnd - t) / 60000;
-      const key = new Date(t).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+      const key = formatISTDayLabel(new Date(t));
 
       const bucket = dayMap[key];
       if (bucket && mins > 0) {
@@ -140,7 +147,7 @@ async function getDailyFocusTimeline(
   const result: DayTimelineEntry[] = [];
   for (let i = dayRange - 1; i >= 0; i--) {
     const d = new Date(to.getTime() - i * 24 * 60 * 60 * 1000);
-    const key = d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+    const key = formatISTDayLabel(d);
     result.push({
       day: key,
       ...(dayMap[key] || emptyDayBuckets()),
@@ -245,7 +252,6 @@ const TimelineTooltip = ({ active, payload, label }: any) => {
 const Analytics = () => {
   const [userId, setUserId] = useState<string | null>(null);
   const [dayRange, setDayRange] = useState<7 | 14 | 30>(7);
-  const [showGryndTube, setShowGryndTube] = useState(false);
 
   // Attention-first state
   const [attentionSummary, setAttentionSummary] = useState<AttentionSummary | null>(null);
@@ -257,6 +263,9 @@ const Analytics = () => {
   const [timeline, setTimeline] = useState<DayTimelineEntry[]>([]);
   const [platforms, setPlatforms] = useState<PlatformEntry[]>([]);
   const [improvement, setImprovement] = useState<ImprovementMetrics | null>(null);
+  const [bestStudyHours, setBestStudyHours] = useState<HourlyFocusInsight[]>([]);
+  const [interruptionPatterns, setInterruptionPatterns] = useState<InterruptionPatternInsight[]>([]);
+  const [subjectPerformance, setSubjectPerformance] = useState<SubjectPerformanceInsight[]>([]);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -272,11 +281,20 @@ const Analytics = () => {
         const to = new Date();
         const from = new Date(to.getTime() - dayRange * 24 * 60 * 60 * 1000);
 
-        const [summary, tl, plat, imp] = await Promise.all([
+        const sessionEventsPromise = fetchSessionEvents(userId, from.toISOString(), to.toISOString());
+
+        const [summary, tl, plat, imp, sessionEvents] = await Promise.all([
           getAttentionSummary(userId, from, to),
           getDailyFocusTimeline(userId, dayRange),
           getPlatformBreakdown(userId, dayRange),
           getImprovementMetrics(userId, dayRange),
+          sessionEventsPromise,
+        ]);
+
+        const [hours, interruptions, subjects] = await Promise.all([
+          computeBestStudyHours(userId, sessionEvents),
+          computeInterruptionPatterns(userId, sessionEvents),
+          computeSubjectPerformance(userId, sessionEvents),
         ]);
 
         if (summary) {
@@ -287,6 +305,9 @@ const Analytics = () => {
         setTimeline(tl);
         setPlatforms(plat);
         setImprovement(imp);
+        setBestStudyHours(hours);
+        setInterruptionPatterns(interruptions);
+        setSubjectPerformance(subjects);
       } catch (e) {
         console.error('Analytics load error:', e);
       } finally {
@@ -705,11 +726,60 @@ const Analytics = () => {
         )}
       </Section>
 
+      <Section label="07" title="Behavioral Insights" style={{ marginBottom: 16 }}>
+        <div style={{ marginTop: 16, display: 'grid', gap: 16 }}>
+          <div>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#e5e7eb' }}>Best Study Hours</p>
+            {bestStudyHours.length === 0 ? (
+              <EmptyState text="No session-event data available for study hour insights." />
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {bestStudyHours.slice(0, 5).map((entry) => (
+                  <div key={`hour-${entry.hour}`} style={{ fontSize: 13, color: '#d1d5db' }}>
+                    {formatHourLabel(entry.hour)}: focus score {entry.avgFocusScore} from {entry.sessionCount} sessions
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#e5e7eb' }}>Interruption Patterns</p>
+            {interruptionPatterns.length === 0 ? (
+              <EmptyState text="No interruption patterns available for this range." />
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {interruptionPatterns.slice(0, 5).map((entry) => (
+                  <div key={`interrupt-${entry.hour}`} style={{ fontSize: 13, color: '#d1d5db' }}>
+                    {formatHourLabel(entry.hour)}: {entry.totalInterruptions} interruptions across {entry.sessionCount} sessions
+                    {' '}({entry.avgInterruptionsPerSession} avg/session)
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#e5e7eb' }}>Subject Performance</p>
+            {subjectPerformance.length === 0 ? (
+              <EmptyState text="No subject performance data available for this range." />
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {subjectPerformance.slice(0, 5).map((entry) => (
+                  <div key={`subject-${entry.subjectId}`} style={{ fontSize: 13, color: '#d1d5db' }}>
+                    {entry.subjectId}: focus {entry.avgFocusScore}, adherence {entry.avgAdherenceScore}, sessions {entry.sessionCount}, active {formatDuration(entry.totalActiveSeconds)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </Section>
+
       {/* ── GryndTube ── */}
       {userId && (
         <div style={{ marginTop: 8 }}>
-          <button
-            onClick={() => setShowGryndTube(!showGryndTube)}
+          <div
             style={{
               width: '100%',
               display: 'flex',
@@ -720,9 +790,7 @@ const Analytics = () => {
               border: '1px solid rgba(255,255,255,0.06)',
               borderRadius: 12,
               color: '#9ca3af',
-              cursor: 'pointer',
-              marginBottom: showGryndTube ? 16 : 0,
-              transition: 'border-color 0.2s',
+              marginBottom: 16,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -732,13 +800,8 @@ const Analytics = () => {
                 <p style={{ margin: 0, fontSize: 12, color: '#4b5563', marginTop: 2 }}>Video learning sessions</p>
               </div>
             </div>
-            <ChevronDown
-              size={16}
-              color="#4b5563"
-              style={{ transform: showGryndTube ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
-            />
-          </button>
-          {showGryndTube && <GryndTubeAnalytics userId={userId} dayRange={dayRange} />}
+          </div>
+          <GryndTubeAnalytics userId={userId} dayRange={dayRange} />
         </div>
       )}
 
@@ -820,6 +883,13 @@ const Section = ({
     {children}
   </div>
 );
+
+const formatHourLabel = (hour: number): string => {
+  const normalizedHour = hour % 24;
+  const suffix = normalizedHour >= 12 ? 'PM' : 'AM';
+  const displayHour = normalizedHour === 0 ? 12 : normalizedHour > 12 ? normalizedHour - 12 : normalizedHour;
+  return `${displayHour}:00 ${suffix}`;
+};
 
 const EmptyState = ({ text }: { text: string }) => (
   <p style={{

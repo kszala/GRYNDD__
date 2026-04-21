@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/supabaseClient';
 import { Play, TrendingUp, Film } from 'lucide-react';
 import { BarChartComponent } from './charts/BarChartComponent';
 import { LineChartComponent } from './charts/LineChartComponent';
@@ -7,6 +6,7 @@ import {
   getChartDataVideoPerformance,
   getChartDataVideoChannels,
   getChartDataVideoWatchHours,
+  getChartDataVideoSummary,
   VideoMetricsData,
   VideoChannelData,
 } from '@/services/analyticsChartService';
@@ -42,34 +42,17 @@ export const GryndTubeAnalytics: React.FC<GryndTubeAnalyticsProps> = ({ userId, 
     const loadGryndTubeData = async () => {
       setIsLoading(true);
       try {
-        // Load video performance, channels, and trend data
-        const [videoPerf, channels, trend] = await Promise.all([
-          getChartDataVideoPerformance(userId, 10),
-          getChartDataVideoChannels(userId, 10),
+        const [videoPerf, channels, trend, summary] = await Promise.all([
+          getChartDataVideoPerformance(userId, 10, dayRange),
+          getChartDataVideoChannels(userId, 10, dayRange),
           getChartDataVideoWatchHours(userId, dayRange),
+          getChartDataVideoSummary(userId, dayRange),
         ]);
 
         setTopVideos(videoPerf);
         setTopChannels(channels);
         setWatchTrend(trend);
-
-        // Calculate stats
-        let totalSeconds = 0;
-        let totalCompletion = 0;
-        const videoIds = new Set<string>();
-
-        videoPerf.forEach((video) => {
-          totalSeconds += video.totalWatchedSeconds || 0;
-          totalCompletion += video.completionPercentage || 0;
-          videoIds.add(video.videoId);
-        });
-
-        setStats({
-          totalWatchHours: Math.round((totalSeconds / 3600) * 10) / 10,
-          totalSessionCount: videoPerf.length,
-          videoCount: videoIds.size,
-          avgCompletionRate: videoPerf.length > 0 ? Math.round(totalCompletion / videoPerf.length) : 0,
-        });
+        setStats(summary);
       } catch (error) {
         console.error('Error loading GryndTube analytics:', error);
       } finally {
@@ -100,6 +83,9 @@ export const GryndTubeAnalytics: React.FC<GryndTubeAnalyticsProps> = ({ userId, 
     name: channel.channelName.length > 15 ? channel.channelName.substring(0, 15) + '...' : channel.channelName,
     watchedHours: Number((channel.totalWatchedSeconds / 3600).toFixed(1)),
   }));
+
+  const trendTitle =
+    dayRange === 7 ? 'Last 7 Days Video Watch Trend' : `Last ${dayRange} Days Video Watch Trend`;
 
   return (
     <div className="space-y-6">
@@ -179,7 +165,7 @@ export const GryndTubeAnalytics: React.FC<GryndTubeAnalyticsProps> = ({ userId, 
         <LineChartComponent
           data={watchTrend}
           dataKeys={[{ key: 'videoWatchHours', name: 'Hours Watched', stroke: '#3b82f6' }]}
-          title="Weekly Video Watch Trend"
+          title={trendTitle}
           xAxisKey="day"
           height={350}
         />
@@ -224,7 +210,9 @@ export const GryndTubeAnalytics: React.FC<GryndTubeAnalyticsProps> = ({ userId, 
                       </span>
                     </td>
                     <td className="text-center text-gray-400 px-4 py-3 text-xs">
-                      {new Date(video.lastWatchedAt).toLocaleDateString()}
+                      {new Date(video.lastWatchedAt).toLocaleDateString('en-IN', {
+                        timeZone: 'Asia/Kolkata',
+                      })}
                     </td>
                   </tr>
                 ))}

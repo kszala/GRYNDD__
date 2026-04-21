@@ -466,17 +466,19 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
 
   for (const event of sorted) {
     if (event.type === 'interrupt') {
+      if (activeStart !== null) {
+        focusMs += Math.max(0, event.timestamp - activeStart);
+        activeStart = null;
+      }
       interruptionStart = event.timestamp;
       continue;
     }
 
-    if (event.type === 'resume' && interruptionStart !== null) {
-      totalInterruptionMs += event.timestamp - interruptionStart;
-      interruptionStart = null;
-      continue;
-    }
-
     if (event.type === 'start' || event.type === 'resume' || event.type === 'RESUME' || event.type === 'RETURN') {
+      if (interruptionStart !== null) {
+        totalInterruptionMs += Math.max(0, event.timestamp - interruptionStart);
+        interruptionStart = null;
+      }
       if (pauseStart !== null) {
         pauseMs += Math.max(0, event.timestamp - pauseStart);
         pauseStart = null;
@@ -495,6 +497,10 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
       event.type === 'AWAY' ||
       event.type === 'INTERRUPTED'
     ) {
+      if (interruptionStart !== null) {
+        totalInterruptionMs += Math.max(0, event.timestamp - interruptionStart);
+        interruptionStart = null;
+      }
       if (activeStart !== null) {
         focusMs += Math.max(0, event.timestamp - activeStart);
         activeStart = null;
@@ -513,6 +519,10 @@ const computeBasicSessionMetrics = (events: TimerEvent[]) => {
       if (pauseStart !== null) {
         pauseMs += Math.max(0, event.timestamp - pauseStart);
         pauseStart = null;
+      }
+      if (interruptionStart !== null) {
+        totalInterruptionMs += Math.max(0, event.timestamp - interruptionStart);
+        interruptionStart = null;
       }
     }
   }
@@ -836,7 +846,8 @@ export const useTimerStore = create<TimerState>()(
         const focusSeconds = derivedMetrics.focusSeconds;
         const pauseSeconds = derivedMetrics.pauseSeconds;
         const pauseCount = derivedMetrics.pauseCount;
-        const totalTrackedSeconds = focusSeconds + pauseSeconds;
+        const totalTrackedSeconds =
+          focusSeconds + pauseSeconds + derivedMetrics.totalInterruptionSeconds;
 
         const { data: heartbeatRows, error: heartbeatError } = await supabase
           .from('session_events')
@@ -862,7 +873,7 @@ export const useTimerStore = create<TimerState>()(
         const focusScore = calculateFocusScore({
           totalActiveSeconds: focusSeconds,
           totalPauseSeconds: pauseSeconds,
-          totalInterruptionSeconds: 0,
+          totalInterruptionSeconds: derivedMetrics.totalInterruptionSeconds,
           interruptionCount: session.interruptionCount || 0,
           totalSessionSeconds: totalTrackedSeconds,
         });
@@ -3184,5 +3195,4 @@ if (typeof window !== 'undefined' && !crossTabSyncInitialized) {
     }
   }, 2000);
 }
-
 

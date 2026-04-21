@@ -2,6 +2,7 @@ import supabase from '../supabaseClient';
 import { addToQueue, registerOutboxHandler, startQueueProcessor } from '../utils/outboxQueue';
 import type { Database } from '../types/database';
 import type { TopicAnalyticsSnapshot, VideoSessionMetrics } from '../types/gryndtube';
+import { getISTStartOfDay } from '../lib/dateUtils';
 
 type SessionRow = Database['public']['Tables']['video_sessions']['Row'];
 type PlaylistItemRow = Database['public']['Tables']['study_playlist_items']['Row'];
@@ -346,7 +347,7 @@ export const analyticsService = {
       videoTitle: string;
       channelName: string;
       totalDurationSeconds: number;
-      topicId: string | null;
+      topicId?: string | null;
       startTimeSeconds: number;
     }
   ) {
@@ -370,7 +371,7 @@ export const analyticsService = {
         videoId: input.videoId,
         videoTitle: input.videoTitle,
         channelName: input.channelName,
-        topicId: input.topicId,
+        topicId: input.topicId ?? null,
         totalDurationSeconds: Math.max(1, Math.floor(input.totalDurationSeconds || 1)),
         watchedSeconds: 0,
       },
@@ -388,7 +389,7 @@ export const analyticsService = {
       videoId: string;
       videoTitle: string;
       channelName: string;
-      topicId: string | null;
+      topicId?: string | null;
       totalDurationSeconds: number;
       watchedSeconds: number;
       pauseCount: number;
@@ -416,7 +417,7 @@ export const analyticsService = {
         videoId: payload.videoId,
         videoTitle: payload.videoTitle,
         channelName: payload.channelName,
-        topicId: payload.topicId,
+        topicId: payload.topicId ?? null,
         totalDurationSeconds: Math.max(1, Math.floor(payload.totalDurationSeconds || 1)),
         watchedSeconds: Math.max(0, Math.floor(payload.watchedSeconds || 0)),
         pauseCount: Math.max(0, Math.floor(payload.pauseCount || 0)),
@@ -441,7 +442,7 @@ export const analyticsService = {
       videoId: string;
       videoTitle: string;
       channelName: string;
-      topicId: string | null;
+      topicId?: string | null;
       totalDurationSeconds: number;
       watchedSeconds: number;
       pauseCount: number;
@@ -467,7 +468,7 @@ export const analyticsService = {
         videoId: payload.videoId,
         videoTitle: payload.videoTitle,
         channelName: payload.channelName,
-        topicId: payload.topicId,
+        topicId: payload.topicId ?? null,
         totalDurationSeconds: Math.max(1, Math.floor(payload.totalDurationSeconds || 1)),
         watchedSeconds: Math.max(0, Math.floor(payload.watchedSeconds || 0)),
         pauseCount: Math.max(0, Math.floor(payload.pauseCount || 0)),
@@ -620,9 +621,7 @@ export const analyticsService = {
       return [];
     }
 
-    // Get start of today in UTC
-    const now = new Date();
-    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+    const startOfDay = getISTStartOfDay(new Date());
 
     const { data, error } = await supabase
       .from('session_events')

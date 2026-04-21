@@ -88,7 +88,7 @@ export const useGryndTubePlayer = ({
       videoId: video.videoId,
       videoTitle: video.title,
       channelName: video.channelTitle,
-      topicId,
+      topicId: topicId ?? null,
       totalDurationSeconds: video.durationSeconds,
       watchedSeconds: watchedSecondsRef.current,
       pauseCount: metricsRef.current.pauseCount,
@@ -126,7 +126,7 @@ export const useGryndTubePlayer = ({
       videoTitle: video.title,
       channelName: video.channelTitle,
       totalDurationSeconds: video.durationSeconds,
-      topicId,
+      topicId: topicId ?? null,
       startTimeSeconds: Math.max(0, Math.floor(currentTimeRef.current || 0)),
     });
   };
@@ -144,7 +144,7 @@ export const useGryndTubePlayer = ({
       videoId: video.videoId,
       videoTitle: video.title,
       channelName: video.channelTitle,
-      topicId,
+      topicId: topicId ?? null,
       totalDurationSeconds: video.durationSeconds,
       watchedSeconds: watchedSecondsRef.current,
       pauseCount: metricsRef.current.pauseCount,
@@ -245,7 +245,7 @@ export const useGryndTubePlayer = ({
               setIsReady(true);
             },
             onStateChange: async (event) => {
-              if (!video || !topicId) {
+              if (!video) {
                 return;
               }
 

@@ -13,6 +13,7 @@ import TermsPage from './components/TermsPage';
 import ContactPage from './components/ContactPage';
 import { useActivityTracker } from '@/hooks/useActivityTracker';
 
+
 // Error Boundary Component
 interface ErrorBoundaryProps {
   children: React.ReactNode;

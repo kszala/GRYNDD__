@@ -5,6 +5,9 @@ import './index.css';
 import { HashRouter } from 'react-router-dom';
 import './lib/presenceTracker'; // Initialize presence tracker
 import { initAttentionEngine } from './lib/attentionEngine';
+import Clarity from "@microsoft/clarity";
+
+Clarity.init("abc123xyz");
 
 initAttentionEngine();
 

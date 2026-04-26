@@ -78,7 +78,7 @@ export const BreakPromptModal: React.FC<BreakPromptModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-900 rounded-3xl max-w-md w-full mx-4 border border-gray-700 shadow-2xl overflow-hidden">
+      <div className="bg-gray-900 rounded-3xl max-w-md w-full mx-4 border border-gray-700 shadow-2xl overflow-hidden max-h-[90vh]">
         {/* Header with colored background */}
         <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-6 relative">
           <button
@@ -105,7 +105,7 @@ export const BreakPromptModal: React.FC<BreakPromptModalProps> = ({
           </div>
         </div>
 
-        <div className="p-6">
+        <div className="p-6 overflow-y-auto">
           {/* Session accomplishment section */}
           <div className="mb-6">
             <label className="block text-gray-400 text-sm mb-3">
@@ -167,7 +167,7 @@ export const BreakPromptModal: React.FC<BreakPromptModalProps> = ({
                 <label className="block text-gray-400 text-sm mb-3">
                   â˜• Break duration (if taking a break)
                 </label>
-                <div className="grid grid-cols-4 gap-2 mb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
                   {[5, 10, 15, 20].map((minutes) => (
                     <button
                       key={minutes}

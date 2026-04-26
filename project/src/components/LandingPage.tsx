@@ -163,7 +163,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       `}</style>
 
       {/* Navbar - Minimal, Rize style */}
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-[#0A0C0F]/95 backdrop-blur-sm border-b border-[#1F2128] px-8 py-4">
+      <nav className="fixed top-0 left-0 right-0 z-50 bg-[#0A0C0F]/95 backdrop-blur-sm border-b border-[#1F2128] px-4 sm:px-8 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <GryndLogo />
           <button
@@ -177,7 +177,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </nav>
 
       {/* Hero - Two column with live product screenshot */}
-      <main className="pt-32 pb-20 px-8">
+      <main className="pt-28 sm:pt-32 pb-16 sm:pb-20 px-4 sm:px-8">
         <div className="max-w-6xl mx-auto">
           <div className="grid md:grid-cols-2 gap-16 items-center">
             {/* Left Column */}
@@ -274,7 +274,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
 
       {/* Stats Strip - Clean data display */}
       <div className="border-y border-[#1F2128] py-4 my-8">
-        <div className="max-w-6xl mx-auto px-8 flex justify-between text-[11px] font-mono text-[#5E6673]">
+        <div className="max-w-6xl mx-auto px-4 sm:px-8 flex flex-wrap gap-x-6 gap-y-2 justify-between text-[11px] font-mono text-[#5E6673]">
           <span>{stats.totalSessions.toLocaleString()} sessions tracked</span>
           <span>94% completion rate</span>
           <span>23 min avg interruption recovery</span>
@@ -283,7 +283,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </div>
 
       {/* Feature 1 - Session Intelligence */}
-      <section className="max-w-6xl mx-auto px-8 py-20">
+      <section className="max-w-6xl mx-auto px-4 sm:px-8 py-14 sm:py-20">
         <div className="grid md:grid-cols-2 gap-16 items-center">
           <div>
             <div className="text-[10px] font-mono text-[#5E6673] mb-3">INTELLIGENT INTERFACE</div>
@@ -305,7 +305,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </section>
 
       {/* Feature 2 - Environment */}
-      <section className="max-w-6xl mx-auto px-8 py-20 border-t border-[#1F2128]">
+      <section className="max-w-6xl mx-auto px-4 sm:px-8 py-14 sm:py-20 border-t border-[#1F2128]">
         <div className="grid md:grid-cols-2 gap-16 items-center">
           <div className="order-2 md:order-1">
             <div className="flex gap-2">
@@ -330,7 +330,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </section>
 
       {/* Feature 3 - GryndMode */}
-      <section className="max-w-6xl mx-auto px-8 py-20 border-t border-[#1F2128]">
+      <section className="max-w-6xl mx-auto px-4 sm:px-8 py-14 sm:py-20 border-t border-[#1F2128]">
         <div className="grid md:grid-cols-2 gap-16 items-center">
           <div>
             <div className="text-[10px] font-mono text-[#5E6673] mb-3">ENFORCEMENT LAYER</div>
@@ -354,7 +354,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </section>
 
       {/* Promise System */}
-      <section className="max-w-4xl mx-auto px-8 py-20 border-t border-[#1F2128] text-center">
+      <section className="max-w-4xl mx-auto px-4 sm:px-8 py-14 sm:py-20 border-t border-[#1F2128] text-center">
         <div className="text-[10px] font-mono text-[#5E6673] mb-4 tracking-wider">ACCOUNTABILITY LAYER</div>
         <h2 className="text-4xl font-semibold tracking-tight mb-4">You said you'd study NLM yesterday.</h2>
         <p className="text-[#8E95A5] text-sm mb-10">Grynd remembered. Did you?</p>
@@ -369,7 +369,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
       </section>
 
       {/* Social Proof - Clean stats cards */}
-      <section className="max-w-6xl mx-auto px-8 py-20 border-t border-[#1F2128]">
+      <section className="max-w-6xl mx-auto px-4 sm:px-8 py-14 sm:py-20 border-t border-[#1F2128]">
         <div className="grid md:grid-cols-3 gap-6">
           {[
             { exam: 'JEE 2025', quote: 'No more lying about study hours. Grynd shows exactly when I tabbed out.', name: 'Arjun S.', metric: '+18% mock scores' },
@@ -390,7 +390,7 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
 
       {/* Final CTA */}
       <section className="border-t border-[#1F2128] py-20 text-center">
-        <div className="max-w-2xl mx-auto px-8">
+        <div className="max-w-2xl mx-auto px-4 sm:px-8">
           <h2 className="text-4xl font-semibold tracking-tight mb-3">Stop planning to study.</h2>
           <div className="text-2xl font-mono font-medium text-[#5E6673] mb-8">START SESSION →</div>
           <button
@@ -406,9 +406,9 @@ export const LandingPage = ({ onAuthSuccess = () => {} }: { onAuthSuccess?: (use
 
       {/* Footer */}
       <footer className="border-t border-[#1F2128] py-8">
-        <div className="max-w-6xl mx-auto px-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-8">
           {/* Main footer content */}
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-6">
             <GryndLogo />
             <div className="flex gap-8 text-sm text-[#9CA3AF]">
               <a href="#/privacy" className="hover:text-[#E8E8E6] transition">Privacy</a>

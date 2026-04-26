@@ -58,6 +58,14 @@ export function CalendarGrid({
   );
 
   const totalMinutes = (endHour - startHour) * 60;
+  const minGridWidth =
+    viewMode === "day"
+      ? undefined
+      : viewMode === "4day"
+      ? 860
+      : viewMode === "month"
+      ? 980
+      : 1180;
 
   return (
     <section className="flex h-full flex-1 flex-col">
@@ -106,7 +114,7 @@ export function CalendarGrid({
             </div>
           )}
         </div>
-        <div className="text-[13px] font-semibold text-gray-100 tracking-wide">
+        <div className="min-w-0 text-right text-[13px] font-semibold text-gray-100 tracking-wide">
           {viewMode === "day"
             ? format(startDate, "EEEE, MMM d, yyyy")
             : viewMode === "month"
@@ -118,57 +126,67 @@ export function CalendarGrid({
         </div>
       </div>
 
-      <div
-        className={`grid border-b border-gray-900 bg-[#0b0b0c] ${
-          viewMode === "day"
-            ? "grid-cols-[5rem_1fr]"
-            : viewMode === "4day"
-            ? "grid-cols-[5rem_repeat(4,minmax(0,1fr))]"
-            : "grid-cols-[5rem_repeat(7,minmax(0,1fr))]"
-        }`}
-      >
-        <div className="border-r border-gray-900" />
-        {days.map((day) => (
-          <div
-            key={day.toISOString()}
-            className={`rounded-3xl px-3 py-3 ${
-              isToday(day) ? "bg-sky-500/10" : "bg-[#090a11]"
-            }`}
-          >
-            <div className="text-[11px] uppercase tracking-[0.18em] text-gray-500">
-              {format(day, "EEE")}
-            </div>
+      <div className="overflow-x-auto border-b border-gray-900 bg-[#0b0b0c]">
+        <div
+          className={`grid min-w-0 ${
+            viewMode === "day"
+              ? "grid-cols-[5rem_1fr]"
+              : viewMode === "4day"
+              ? "grid-cols-[5rem_repeat(4,minmax(0,1fr))]"
+              : "grid-cols-[5rem_repeat(7,minmax(0,1fr))]"
+          }`}
+          style={minGridWidth ? { minWidth: minGridWidth } : undefined}
+        >
+          <div className="border-r border-gray-900" />
+          {days.map((day) => (
             <div
-              className={`text-[13px] font-semibold ${
-                isToday(day) ? "text-blue-200" : "text-gray-100"
+              key={day.toISOString()}
+              className={`rounded-3xl px-3 py-3 ${
+                isToday(day) ? "bg-sky-500/10" : "bg-[#090a11]"
               }`}
             >
-              {format(day, "dd MMM")}
+              <div className="text-[11px] uppercase tracking-[0.18em] text-gray-500">
+                {format(day, "EEE")}
+              </div>
+              <div
+                className={`text-[13px] font-semibold ${
+                  isToday(day) ? "text-blue-200" : "text-gray-100"
+                }`}
+              >
+                {format(day, "dd MMM")}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       <div ref={scrollRef} className="relative flex flex-1 overflow-y-auto bg-[#090a11]">
-        <TimeColumn hours={hours} hourHeight={hourHeight} endHour={endHour} />
-        <div className="flex flex-1 gap-px">
-          {days.map((day, index) => (
-            <DayColumn
-              key={day.toISOString()}
-              id={`day-${index}`}
-              date={day}
-              dayIndex={index}
-              blocks={blocks}
-              hourHeight={hourHeight}
-              startHour={startHour}
-              totalMinutes={totalMinutes}
-              hours={hours}
-              ghostTop={ghostDayIndex === index ? ghostTop : null}
-              isToday={isToday(day)}
-              nowTop={nowTop}
-              onBlockContextMenu={onBlockContextMenu}
-            />
-          ))}
+        <div className="flex flex-1 overflow-x-auto">
+          <div
+            className="flex min-w-0 flex-1"
+            style={minGridWidth ? { minWidth: minGridWidth } : undefined}
+          >
+            <TimeColumn hours={hours} hourHeight={hourHeight} endHour={endHour} />
+            <div className="flex flex-1 gap-px">
+              {days.map((day, index) => (
+                <DayColumn
+                  key={day.toISOString()}
+                  id={`day-${index}`}
+                  date={day}
+                  dayIndex={index}
+                  blocks={blocks}
+                  hourHeight={hourHeight}
+                  startHour={startHour}
+                  totalMinutes={totalMinutes}
+                  hours={hours}
+                  ghostTop={ghostDayIndex === index ? ghostTop : null}
+                  isToday={isToday(day)}
+                  nowTop={nowTop}
+                  onBlockContextMenu={onBlockContextMenu}
+                />
+              ))}
+            </div>
+          </div>
         </div>
         {blocks.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

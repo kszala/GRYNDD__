@@ -22,7 +22,7 @@ const ConfirmBreakModal: React.FC<ConfirmBreakModalProps> = ({
       />
       
       {/* Modal */}
-      <div className="relative bg-white dark:bg-zinc-800 rounded-2xl shadow-lg p-6 w-full max-w-md mx-auto transform transition-all">
+      <div className="relative bg-white dark:bg-zinc-800 rounded-2xl shadow-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto mx-auto transform transition-all">
         {/* Header */}
         <div className="text-center mb-6">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">

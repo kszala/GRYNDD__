@@ -12,6 +12,8 @@ import {
   Workflow,
   ChevronLeft,
   ChevronRight,
+  Menu,
+  X,
 } from 'lucide-react';
 import supabase from '../supabaseClient';
 import { SessionReflectionPrompt } from './SessionReflectionPrompt';
@@ -62,6 +64,7 @@ const navigation = [
 
 export const Layout: React.FC = () => {
   const [collapsed, setCollapsed] = React.useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [userId, setUserId] = React.useState<string | null>(null);
   const { nudgeMessage, dismissNudge } = useBehaviorNudges(userId);
 
@@ -69,6 +72,14 @@ export const Layout: React.FC = () => {
     void supabase.auth.getUser().then(({ data: { user } }) => {
       setUserId(user?.id ?? null);
     });
+  }, []);
+
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   const isRunning = useTimerStore((state) => state.isRunning);
@@ -129,22 +140,49 @@ export const Layout: React.FC = () => {
 
   return (
     <div
-      className="flex h-screen bg-[var(--grynd-bg)] text-[var(--grynd-text)]"
+      className="flex h-screen min-w-0 bg-[var(--grynd-bg)] text-[var(--grynd-text)]"
       style={{
         ['--grynd-accent' as any]: accentConfig.accent,
         ['--grynd-accent-dim' as any]: accentConfig.dim,
       }}
     >
       {/* Sidebar */}
+      <div className="md:hidden">
+        {mobileNavOpen && (
+          <button
+            type="button"
+            aria-label="Close navigation overlay"
+            className="fixed inset-0 z-40 bg-black/60"
+            onClick={() => setMobileNavOpen(false)}
+          />
+        )}
+      </div>
+
       <div
-        className={`flex flex-col bg-[#111316] border-r border-white/5 transition-all duration-300 ${
-          collapsed ? 'w-20' : 'w-64'
-        }`}
+        className={[
+          'fixed inset-y-0 left-0 z-50 flex flex-col bg-[#111316] border-r border-white/5 transition-transform duration-300',
+          'w-72 max-w-[85vw]',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full',
+          'md:static md:translate-x-0',
+          collapsed ? 'md:w-20' : 'md:w-64',
+        ].join(' ')}
       >
         {/* Top section */}
         <div className="px-5 py-4 flex items-center justify-between">
           <GryndLogo collapsed={collapsed} />
-          {!collapsed && <NotificationBell />}
+          <div className="flex items-center gap-2">
+            <div className="md:hidden">
+              <button
+                type="button"
+                aria-label="Close navigation"
+                onClick={() => setMobileNavOpen(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-300 hover:text-white hover:bg-white/5 transition-all duration-200"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            {!collapsed && <NotificationBell />}
+          </div>
         </div>
 
         {/* Navigation */}
@@ -162,6 +200,7 @@ export const Layout: React.FC = () => {
                 }`
               }
               title={collapsed ? item.name : undefined}
+              onClick={() => setMobileNavOpen(false)}
             >
               <item.icon size={20} className="text-current" />
               {!collapsed && <span className="font-mono text-[12px] uppercase tracking-[0.08em]">{item.name}</span>}
@@ -175,7 +214,7 @@ export const Layout: React.FC = () => {
           </div>
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="flex items-center justify-center w-full rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200"
+            className="hidden md:flex items-center justify-center w-full rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200"
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
@@ -195,8 +234,25 @@ export const Layout: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-hidden">
-        <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="md:hidden flex items-center justify-between gap-3 border-b border-white/5 bg-[#0c0d0f] px-4 py-3">
+          <div className="min-w-0">
+            <GryndLogo collapsed={false} />
+          </div>
+          <div className="flex items-center gap-2">
+            <NotificationBell />
+            <button
+              type="button"
+              aria-label="Open navigation"
+              onClick={() => setMobileNavOpen(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+            >
+              <Menu size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="h-full min-w-0 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
           <Outlet />
         </div>
       </div>

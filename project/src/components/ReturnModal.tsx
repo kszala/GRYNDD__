@@ -29,7 +29,7 @@ export const ReturnModal: React.FC<ReturnModalProps> = ({
   if (type === 'short') {
     return (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4">
-        <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl p-5">
+        <div className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl p-5">
           <p className="text-white text-center mb-4">You stepped away briefly</p>
           <div className="flex gap-2">
             <button
@@ -53,7 +53,7 @@ export const ReturnModal: React.FC<ReturnModalProps> = ({
   if (type === 'medium') {
     return (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4">
-        <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl p-5">
+        <div className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl p-5">
           <p className="text-white text-center mb-4">
             You were away for {Math.round(duration / 60)} min
           </p>
@@ -79,7 +79,7 @@ export const ReturnModal: React.FC<ReturnModalProps> = ({
   // long
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl">
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-700 bg-gradient-to-br from-slate-800 to-slate-900 shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-700 p-5">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange-500/20 text-orange-300">

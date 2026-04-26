@@ -87,7 +87,7 @@ export const SessionStartOverlay: React.FC<SessionStartOverlayProps> = ({
         <div
           style={{
             fontFamily: 'Cormorant Garamond, serif',
-            fontSize: '64px',
+            fontSize: 'clamp(32px, 8vw, 64px)',
             fontWeight: 400,
             color: '#E8E0D0',
             letterSpacing: '-0.02em',

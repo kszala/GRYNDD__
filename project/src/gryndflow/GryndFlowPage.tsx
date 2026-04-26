@@ -127,6 +127,12 @@ export function GryndFlowPage() {
   }, [pxPerMinute, totalMinutes]);
 
   useEffect(() => {
+    // Default to collapsed sidebar on smaller screens to prevent cramped layout.
+    if (typeof window === "undefined") return;
+    if (window.innerWidth < 768) setIsSidebarCollapsed(true);
+  }, []);
+
+  useEffect(() => {
     if (!scrollRef.current || nowTop === null || didScrollRef.current) return;
     const target = Math.max(0, nowTop - HOUR_HEIGHT * 2);
     scrollRef.current.scrollTop = target;

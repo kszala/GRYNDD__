@@ -261,30 +261,17 @@ export const Dashboard: React.FC = () => {
   };
 
   return (
-    <div
-      style={{
-        padding: '18px 20px 12px',
-        height: '100vh',
-        background: '#060608',
-        color: '#fff',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-        overflow: 'hidden',
-        fontFamily: UI,
-        userSelect: 'none',
-        boxSizing: 'border-box',
-      }}
-    >
+    <div className="min-h-full bg-[#060608] text-white flex flex-col gap-2.5 overflow-x-hidden p-4 sm:p-5 md:p-6">
       {/* ── HEADER ──────────────────────────────────────────────────── */}
       <header
-        style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0, ...fadeIn(0) }}
+        className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between flex-shrink-0 min-w-0"
+        style={fadeIn(0)}
       >
-        <div>
+        <div className="min-w-0">
           <h1
             style={{
               fontFamily: UI,
-              fontSize: '2.5rem',
+              fontSize: 'clamp(1.6rem, 4.5vw, 2.5rem)',
               fontWeight: 700,
               lineHeight: 1.06,
               letterSpacing: '-0.8px',
@@ -297,7 +284,7 @@ export const Dashboard: React.FC = () => {
           <h2
             style={{
               fontFamily: UI,
-              fontSize: '2.5rem',
+              fontSize: 'clamp(1.6rem, 4.5vw, 2.5rem)',
               fontWeight: 700,
               lineHeight: 1.06,
               letterSpacing: '-0.8px',
@@ -309,11 +296,11 @@ export const Dashboard: React.FC = () => {
           </h2>
         </div>
 
-        <div style={{ textAlign: 'right' }}>
+        <div className="shrink-0 text-left sm:text-right">
           <p
             style={{
               fontFamily: MONO,
-              fontSize: '2.9rem',
+              fontSize: 'clamp(2.0rem, 7vw, 2.9rem)',
               fontWeight: 700,
               lineHeight: 1,
               letterSpacing: '-1px',
@@ -331,13 +318,8 @@ export const Dashboard: React.FC = () => {
       </header>
 
       <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: '8px',
-          flexShrink: 0,
-          ...fadeIn(0.07),
-        }}
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 flex-shrink-0"
+        style={fadeIn(0.07)}
       >
         <div
           style={{ ...card, padding: '11px 13px', transition: 'background .2s' }}
@@ -423,20 +405,14 @@ export const Dashboard: React.FC = () => {
       </div>
 
       <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: 'grid',
-          gridTemplateColumns: '1fr 360px',
-          gap: '8px',
-          ...fadeIn(0.14),
-        }}
+        className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-2 flex-1 min-h-0 min-w-0"
+        style={fadeIn(0.14)}
       >
-        <div style={{ height: '100%', overflow: 'hidden', paddingRight: '8px', borderRight: '1px solid rgba(255,255,255,.05)' }}>
+        <div className="min-w-0 lg:border-r lg:border-white/5 lg:pr-2">
           <PomodoroWidget />
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', height: '100%' }}>
+        <div className="flex flex-col gap-2 min-w-0">
           <div
             role="button"
             tabIndex={0}

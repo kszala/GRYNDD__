@@ -424,19 +424,14 @@ const Analytics = () => {
   const maxPlatformMin = platforms[0]?.minutes || 1;
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: '#0d1117',
-      color: '#e5e7eb',
-      padding: '40px 32px',
-      maxWidth: 1100,
-      margin: '0 auto',
-      fontFamily: 'DM Sans, system-ui, sans-serif',
-    }}>
+    <div
+      className="min-h-full bg-[#0d1117] text-[#e5e7eb] font-['DM_Sans',system-ui,sans-serif] px-4 py-6 sm:px-6 sm:py-10 lg:px-8"
+      style={{ maxWidth: 1100, margin: '0 auto' }}
+    >
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 36 }}>
-        <div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-8 sm:mb-9 min-w-0">
+        <div className="min-w-0">
           <p style={{
             fontSize: 11,
             fontFamily: 'JetBrains Mono, monospace',
@@ -454,6 +449,7 @@ const Analytics = () => {
         <select
           value={dayRange}
           onChange={(e) => setDayRange(Number(e.target.value) as 7 | 14 | 30)}
+          className="w-full sm:w-auto"
           style={{
             background: '#161b27',
             border: '1px solid rgba(255,255,255,0.08)',
@@ -599,7 +595,7 @@ const Analytics = () => {
       </Section>
 
       {/* ── 3 + 4. Platform Breakdown & Focus vs Distraction (side-by-side) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
 
         {/* Platform Breakdown */}
         <Section label="03" title="Platform Breakdown" style={{ marginBottom: 0 }}>
@@ -703,7 +699,7 @@ const Analytics = () => {
         {!improvement ? (
           <EmptyState text="Need more historical data to compare periods." />
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 16 }}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
             <DeltaCard
               label="Focus Time"
               delta={improvement.focusDelta}

@@ -32,8 +32,8 @@ export const InterruptReturnModal: React.FC<InterruptReturnModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-md overflow-hidden rounded-3xl border border-rose-500/20 bg-gradient-to-br from-slate-900 via-slate-950 to-rose-950 shadow-2xl">
-        <div className="px-6 py-5">
+      <div className="w-full max-w-md max-h-[90vh] overflow-hidden rounded-3xl border border-rose-500/20 bg-gradient-to-br from-slate-900 via-slate-950 to-rose-950 shadow-2xl">
+        <div className="max-h-[90vh] overflow-y-auto px-5 py-5 sm:px-6">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.24em] text-rose-300">Interrupt return</p>
